@@ -75,7 +75,21 @@
       <entry><structfield>total_time</structfield></entry>
       <entry><type>double precision</type></entry>
       <entry></entry>
-      <entry>Total time spent in the statement, in milliseconds</entry>
+      <entry>Total execution time spent in the statement, in milliseconds</entry>
+     </row>
+
+     <row>
+      <entry><structfield>min_time</structfield></entry>
+      <entry><type>double precision</type></entry>
+      <entry></entry>
+      <entry>Minimum execution time spent in the statement, in milliseconds</entry>
+     </row>
+
+     <row>
+      <entry><structfield>max_time</structfield></entry>
+      <entry><type>double precision</type></entry>
+      <entry></entry>
+      <entry>Maximum execution time spent in the statement, in milliseconds</entry>
      </row>
 
      <row>
@@ -247,6 +261,24 @@
      <para>
       <function>pg_stat_statements_reset</function> discards all statistics
       gathered so far by <filename>pg_stat_statements</>.
+      By default, this function can only be executed by superusers.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+   <indexterm>
+    <primary>pg_stat_statements_reset_time</primary>
+   </indexterm>
+
+    <term>
+     <function>pg_stat_statements_reset_time() returns void</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pg_stat_statements_reset_time</function> inits statistics of
+      the min_time and max_time gathered so far by <filename>pg_stat_statements</>.
       By default, this function can only be executed by superusers.
      </para>
     </listitem>

@@ -76,6 +76,7 @@ static const uint32 PGSS_FILE_HEADER = 0x20120328;
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define STICKY_DECREASE_FACTOR	(0.50)	/* factor for sticky entries */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
+#define EXEC_TIME_INIT			(-1)	/* initial execution time */
 
 #define JUMBLE_SIZE				1024	/* query serialization buffer size */
 
@@ -102,6 +103,8 @@ typedef struct Counters
 {
 	int64		calls;			/* # of times executed */
 	double		total_time;		/* total execution time, in msec */
+	double		min_time;		/* maximum execution time, in msec */
+	double		max_time;		/* minimum execution time, in msec */
 	int64		rows;			/* total # of retrieved or affected rows */
 	int64		shared_blks_hit;	/* # of shared buffer hits */
 	int64		shared_blks_read;		/* # of shared disk blocks read */
@@ -225,9 +228,11 @@ void		_PG_init(void);
 void		_PG_fini(void);
 
 Datum		pg_stat_statements_reset(PG_FUNCTION_ARGS);
+Datum		pg_stat_statements_reset_time(PG_FUNCTION_ARGS);
 Datum		pg_stat_statements(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(pg_stat_statements_reset);
+PG_FUNCTION_INFO_V1(pg_stat_statements_reset_time);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 
 static void pgss_shmem_startup(void);
@@ -254,6 +259,7 @@ static pgssEntry *entry_alloc(pgssHashKey *key, const char *query,
 			int query_len, bool sticky);
 static void entry_dealloc(void);
 static void entry_reset(void);
+static void entry_reset_time(void);
 static void AppendJumble(pgssJumbleState *jstate,
 			 const unsigned char *item, Size size);
 static void JumbleQuery(pgssJumbleState *jstate, Query *query);
@@ -1044,6 +1050,11 @@ pgss_store(const char *query, uint32 queryId,
 		e->counters.blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->blk_write_time);
 		e->counters.usage += USAGE_EXEC(total_time);
 
+		if (e->counters.min_time > total_time || e->counters.min_time == EXEC_TIME_INIT)
+			e->counters.min_time = total_time;
+		if (e->counters.max_time < total_time)
+			e->counters.max_time = total_time;
+
 		SpinLockRelease(&e->mutex);
 	}
 
@@ -1068,8 +1079,30 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+/*
+ * Reset min/max time statement statistics.
+ */
+Datum
+pg_stat_statements_reset_time(PG_FUNCTION_ARGS)
+{
+	if (!pgss || !pgss_hash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
+	entry_reset_time();
+	PG_RETURN_VOID();
+}
+
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
-#define PG_STAT_STATEMENTS_COLS			18
+#define PG_STAT_STATEMENTS_COLS_V1_1	18
+#define PG_STAT_STATEMENTS_COLS			20
+
+enum SQL_SUPPORT_VERSION
+{
+	SQL_SUPPORTS_V1_0,
+	SQL_SUPPORTS_V1_1,
+	SQL_SUPPORTS_V1_2
+};
 
 /*
  * Retrieve statement statistics.
@@ -1086,7 +1119,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	bool		is_superuser = superuser();
 	HASH_SEQ_STATUS hash_seq;
 	pgssEntry  *entry;
-	bool		sql_supports_v1_1_counters = true;
+	int			sql_support_version = -1;
 
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
@@ -1107,8 +1140,21 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
-	if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_0)
-		sql_supports_v1_1_counters = false;
+	switch (tupdesc->natts)
+	{
+		case PG_STAT_STATEMENTS_COLS_V1_0:
+			sql_support_version = SQL_SUPPORTS_V1_0;
+			break;
+		case PG_STAT_STATEMENTS_COLS_V1_1:
+			sql_support_version = SQL_SUPPORTS_V1_1;
+			break;
+		case PG_STAT_STATEMENTS_COLS:
+			sql_support_version = SQL_SUPPORTS_V1_2;
+			break;
+		default:
+			Assert(false);	/* can't get here */
+			break;
+	};
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -1167,27 +1213,35 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 
 		values[i++] = Int64GetDatumFast(tmp.calls);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
+		if (sql_support_version >= SQL_SUPPORTS_V1_2)
+		{
+			if (tmp.min_time == EXEC_TIME_INIT)
+				nulls[i++] = true;
+			else
+				values[i++] = Float8GetDatumFast(tmp.min_time);
+			if (tmp.max_time == EXEC_TIME_INIT)
+				nulls[i++] = true;
+			else
+				values[i++] = Float8GetDatumFast(tmp.max_time);
+		}
 		values[i++] = Int64GetDatumFast(tmp.rows);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (sql_support_version >= SQL_SUPPORTS_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.shared_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (sql_support_version >= SQL_SUPPORTS_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.local_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_read);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_written);
-		if (sql_supports_v1_1_counters)
+		if (sql_support_version >= SQL_SUPPORTS_V1_1)
 		{
 			values[i++] = Float8GetDatumFast(tmp.blk_read_time);
 			values[i++] = Float8GetDatumFast(tmp.blk_write_time);
 		}
-
-		Assert(i == (sql_supports_v1_1_counters ?
-					 PG_STAT_STATEMENTS_COLS : PG_STAT_STATEMENTS_COLS_V1_0));
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
@@ -1261,6 +1315,9 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		entry->query_len = query_len;
 		memcpy(entry->query, query, query_len);
 		entry->query[query_len] = '\0';
+		/* set the appropriate initial max/min execution time */
+		entry->counters.min_time = EXEC_TIME_INIT;
+		entry->counters.max_time = EXEC_TIME_INIT;
 	}
 
 	return entry;
@@ -1348,6 +1405,27 @@ entry_reset(void)
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		hash_search(pgss_hash, &entry->key, HASH_REMOVE, NULL);
+	}
+
+	LWLockRelease(pgss->lock);
+}
+
+/*
+ * Reset min/max time values of all entries.
+ */
+static void
+entry_reset_time(void)
+{
+	HASH_SEQ_STATUS hash_seq;
+	pgssEntry  *entry;
+
+	LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, pgss_hash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		entry->counters.min_time = EXEC_TIME_INIT;
+		entry->counters.max_time = EXEC_TIME_INIT;
 	}
 
 	LWLockRelease(pgss->lock);
