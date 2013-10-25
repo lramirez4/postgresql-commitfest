@@ -177,7 +177,7 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		heap_close(rel, NoLock);
 
 		/* Do the job */
-		cluster_rel(tableOid, indexOid, false, stmt->verbose, -1, -1);
+		cluster_rel(tableOid, indexOid, false, stmt->verbose, 0, 0);
 	}
 	else
 	{
@@ -227,7 +227,7 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 			/* functions in indexes may want a snapshot set */
 			PushActiveSnapshot(GetTransactionSnapshot());
 			cluster_rel(rvtc->tableOid, rvtc->indexOid, true, stmt->verbose,
-						-1, -1);
+						0, 0);
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 		}
@@ -853,9 +853,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 		*pSwapToastByContent = false;
 
 	/*
-	 * compute xids used to freeze and weed out dead tuples.  We use -1
-	 * freeze_min_age to avoid having CLUSTER freeze tuples earlier than a
-	 * plain VACUUM would.
+	 * compute xids used to freeze and weed out dead tuples.
 	 */
 	vacuum_set_xid_limits(freeze_min_age, freeze_table_age,
 						  OldHeap->rd_rel->relisshared,
