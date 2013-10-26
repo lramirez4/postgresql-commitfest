@@ -373,13 +373,14 @@ PLy_output_datum_func2(PLyObToDatum *arg, HeapTuple typeTup)
 	arg->typioparam = getTypeIOParam(typeTup);
 	arg->typbyval = typeStruct->typbyval;
 
-	element_type = get_element_type(arg->typoid);
+	element_type = get_base_element_type(arg->typoid);
 
 	/*
 	 * Select a conversion function to convert Python objects to PostgreSQL
 	 * datums.	Most data types can go through the generic function.
 	 */
-	switch (getBaseType(element_type ? element_type : arg->typoid))
+	/* if element_type is set, it is already a base type */
+	switch (element_type ? element_type : getBaseType(arg->typoid))
 	{
 		case BOOLOID:
 			arg->func = PLyObject_ToBool;
@@ -427,7 +428,8 @@ static void
 PLy_input_datum_func2(PLyDatumToOb *arg, Oid typeOid, HeapTuple typeTup)
 {
 	Form_pg_type typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
-	Oid			element_type = get_element_type(typeOid);
+	// It's safe to handle domains of array types as its base array type
+	Oid			element_type = get_base_element_type(typeOid);
 
 	/* Get the type's conversion information */
 	perm_fmgr_info(typeStruct->typoutput, &arg->typfunc);
@@ -808,6 +810,7 @@ static Datum
 PLySequence_ToArray(PLyObToDatum *arg, int32 typmod, PyObject *plrv)
 {
 	ArrayType  *array;
+	Datum      rv;
 	int			i;
 	Datum	   *elems;
 	bool	   *nulls;
@@ -844,8 +847,12 @@ PLySequence_ToArray(PLyObToDatum *arg, int32 typmod, PyObject *plrv)
 
 	lbs = 1;
 	array = construct_md_array(elems, nulls, 1, &len, &lbs,
-							   get_element_type(arg->typoid), arg->elm->typlen, arg->elm->typbyval, arg->elm->typalign);
-	return PointerGetDatum(array);
+							   get_base_element_type(arg->typoid), arg->elm->typlen, arg->elm->typbyval, arg->elm->typalign);
+	// if the result type is a domain of array, we must check it
+	rv = PointerGetDatum(array);
+	if (get_typtype(arg->typoid) == TYPTYPE_DOMAIN)
+		domain_check(rv, false, arg->typoid, &arg->typfunc.fn_extra, arg->typfunc.fn_mcxt);
+	return rv;
 }
 
 
