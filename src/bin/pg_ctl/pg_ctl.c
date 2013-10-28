@@ -1240,6 +1240,7 @@ pgwin32_CommandLine(bool registration)
 {
 	static char cmdLine[MAXPGPATH];
 	int			ret;
+	int			i;
 
 #ifdef __CYGWIN__
 	char		buf[MAXPGPATH];
@@ -1252,6 +1253,11 @@ pgwin32_CommandLine(bool registration)
 		{
 			write_stderr(_("%s: could not find own program executable\n"), progname);
 			exit(1);
+		}
+		if (pg_strcasecmp(cmdLine + strlen(cmdLine) - 4, ".exe") != 0)
+		{
+			/* If commandline does not end with .exe, append it */
+			strcat(cmdLine, ".exe");
 		}
 	}
 	else
@@ -1275,13 +1281,14 @@ pgwin32_CommandLine(bool registration)
 	strcpy(cmdLine, buf);
 #endif
 
+	/* need to be enclosed in quotation */
+	for(i = sizeof(cmdLine); i > 1; i--)
+	  cmdLine[i - 1] = cmdLine[i - 2];
+	cmdLine[0] = '\"';
+	strcat(cmdLine, "\"");
+
 	if (registration)
 	{
-		if (pg_strcasecmp(cmdLine + strlen(cmdLine) - 4, ".exe") != 0)
-		{
-			/* If commandline does not end in .exe, append it */
-			strcat(cmdLine, ".exe");
-		}
 		strcat(cmdLine, " runservice -N \"");
 		strcat(cmdLine, register_servicename);
 		strcat(cmdLine, "\"");
