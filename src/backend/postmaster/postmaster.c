@@ -2252,6 +2252,8 @@ ClosePostmasterPorts(bool am_syslogger)
 			StreamClose(ListenSocket[i]);
 			ListenSocket[i] = PGINVALID_SOCKET;
 		}
+        else
+            break;
 	}
 
 	/* If using syslogger, close the read side of the pipe */
