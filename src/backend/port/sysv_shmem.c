@@ -32,6 +32,7 @@
 #include "portability/mem.h"
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
+#include "utils/guc.h"
 
 
 typedef key_t IpcMemoryKey;		/* shared memory key passed to shmget(2) */
@@ -367,14 +368,31 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 	 */
 #ifndef EXEC_BACKEND
 	{
-		long		pagesize = sysconf(_SC_PAGE_SIZE);
+		int			flags = PG_MMAP_FLAGS;
+		long		pagesize = 2*1024*1024;
+
+#ifdef MAP_HUGETLB
+		if (huge_tlb_pages == HUGE_TLB_ON || huge_tlb_pages == HUGE_TLB_TRY)
+		{
+			flags |= MAP_HUGETLB;
+		}
+#endif
 
 		/*
 		 * Ensure request size is a multiple of pagesize.
 		 *
-		 * pagesize will, for practical purposes, always be a power of two.
-		 * But just in case it isn't, we do it this way instead of using
-		 * TYPEALIGN().
+		 * By doing this ourselves, we maximise the chances of being
+		 * able to use huge TLB pages even on kernels that do not round
+		 * up the request size correctly, for example due to this bug:
+		 * https://bugzilla.kernel.org/show_bug.cgi?id=56881
+		 *
+		 * The default value of 2MB for pagesize is chosen based on the
+		 * most common supported huge page size. Rounding up to a larger
+		 * value (e.g. 16MB) would use even larger pages if the hardware
+		 * supported them, but would potentially waste more space.
+		 *
+		 * We round up by hand instead of using TYPEALIGN(), but for all
+		 * practical purposes, pagesize will always be a power of two.
 		 */
 		if (pagesize > 0 && size % pagesize != 0)
 			size += pagesize - (size % pagesize);
@@ -386,8 +404,21 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 		 * out to be false, we might need to add a run-time test here and do
 		 * this only if the running kernel supports it.
 		 */
-		AnonymousShmem = mmap(NULL, size, PROT_READ | PROT_WRITE, PG_MMAP_FLAGS,
-							  -1, 0);
+
+		AnonymousShmem = mmap(NULL, size, PROT_READ|PROT_WRITE, flags, -1, 0);
+
+#ifdef MAP_HUGETLB
+		if (huge_tlb_pages == HUGE_TLB_TRY && AnonymousShmem == MAP_FAILED)
+		{
+			elog(DEBUG1, "mmap(%lu) with MAP_HUGETLB failed with errno=%d; "
+				 "trying without", (uint64)size, errno);
+
+			flags &= ~MAP_HUGETLB;
+			AnonymousShmem = mmap(NULL, size, PROT_READ|PROT_WRITE, flags,
+								  -1, 0);
+		}
+#endif
+
 		if (AnonymousShmem == MAP_FAILED)
 			ereport(FATAL,
 					(errmsg("could not map anonymous shared memory: %m"),

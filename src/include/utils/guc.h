@@ -235,6 +235,24 @@ extern int	tcp_keepalives_idle;
 extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
 
+
+/*
+ * Possible values for huge_tlb_pages; default is HUGE_TLB_TRY
+ */
+typedef enum
+{
+	HUGE_TLB_OFF,
+	HUGE_TLB_ON,
+	HUGE_TLB_TRY
+} HugeTlbType;
+
+
+/*
+ * configure the use of huge TLB pages
+ */
+extern int huge_tlb_pages;
+
+
 /*
  * Functions exported by guc.c
  */
