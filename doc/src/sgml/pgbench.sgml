@@ -262,6 +262,18 @@ pgbench <optional> <replaceable>options</> </optional> <replaceable>dbname</>
 
     <variablelist>
 
+      <varlistentry>
+       <term><option>-q</option> <replaceable>accurate</></term>
+       <term><option>--accurate=</option><replaceable>accurate</></term>
+       <listitem>
+        <para>
+        Execute pgbench on accurate mode, that executes cluster, checkpoint,
+        sync, and checkpoint before starting benchmark to get more accurate
+        benchmark result.
+        </para>
+       </listitem>
+     </varlistentry>
+
      <varlistentry>
       <term><option>-c</option> <replaceable>clients</></term>
       <term><option>--client=</option><replaceable>clients</></term>

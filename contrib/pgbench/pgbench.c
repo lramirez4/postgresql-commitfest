@@ -360,6 +360,7 @@ usage(void)
 		   "  --tablespace=TABLESPACE  create tables in the specified tablespace\n"
 		   "  --unlogged-tables        create tables as unlogged tables\n"
 		   "\nBenchmarking options:\n"
+		   "  -a  --accurate           execute pgbench on most accurate mode\n"
 		   "  -c, --client=NUM         number of concurrent database clients (default: 1)\n"
 		   "  -C, --connect            establish new connection for each transaction\n"
 		   "  -D, --define=VARNAME=VALUE\n"
@@ -2252,7 +2253,8 @@ int
 main(int argc, char **argv)
 {
 	static struct option long_options[] = {
-		/* systematic long/short named options*/
+		/* systematic long/short named options */
+		{"accurate", no_argument, NULL, 'a'},
 		{"client", required_argument, NULL, 'c'},
 		{"connect", no_argument, NULL, 'C'},
 		{"debug", no_argument, NULL, 'd'},
@@ -2291,6 +2293,7 @@ main(int argc, char **argv)
 	int			nclients = 1;	/* default number of simulated clients */
 	int			nthreads = 1;	/* default number of threads */
 	int			is_init_mode = 0;		/* initialize mode? */
+	int			is_accurate_mode = 0; 		/* execute cluster and checkpoint before testing */
 	int			is_no_vacuum = 0;		/* no vacuum at all before testing? */
 	int			do_vacuum_accounts = 0; /* do vacuum accounts before testing? */
 	int			ttype = 0;		/* transaction type. 0: TPC-B, 1: SELECT only,
@@ -2354,10 +2357,13 @@ main(int argc, char **argv)
 	state = (CState *) pg_malloc(sizeof(CState));
 	memset(state, 0, sizeof(CState));
 
-	while ((c = getopt_long(argc, argv, "ih:nvp:dqSNc:j:Crs:t:T:U:lf:D:F:M:P:R:", long_options, &optindex)) != -1)
+	while ((c = getopt_long(argc, argv, "aih:nvp:dqSNc:j:Crs:t:T:U:lf:D:F:M:P:R:", long_options, &optindex)) != -1)
 	{
 		switch (c)
 		{
+			case 'a':
+				is_accurate_mode++;
+				break;
 			case 'i':
 				is_init_mode++;
 				break;
@@ -2759,7 +2765,25 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (!is_no_vacuum)
+	if(is_accurate_mode)
+	{
+		fprintf(stderr, "starting cluster...");
+		executeStatement(con, "cluster pgbench_accounts using pgbench_accounts_pkey");
+		executeStatement(con, "cluster pgbench_branches using pgbench_branches_pkey");
+		executeStatement(con, "cluster pgbench_tellers using pgbench_tellers_pkey");
+		executeStatement(con, "truncate pgbench_history");
+		fprintf(stderr, "end.\n");
+		fprintf(stderr, "starting checkpoint...");
+		executeStatement(con, "checkpoint");
+		fprintf(stderr, "end.\n");
+		fprintf(stderr, "starting sync all buffers and wait 10 seconds...");
+		sync();
+		/* wait 10 seconds until raid cache is empty */
+		pg_usleep(10 * 1000 * 1000);
+		executeStatement(con, "checkpoint");
+		fprintf(stderr, "end.\n");
+	}
+	else if (!is_no_vacuum)
 	{
 		fprintf(stderr, "starting vacuum...");
 		executeStatement(con, "vacuum pgbench_branches");
