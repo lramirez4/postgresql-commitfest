@@ -3408,7 +3408,9 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmppath)));
-
+#if defined(HAVE_FALLOCATE)
+	fallocate(fd, FALLOC_FL_KEEP_SIZE, 0, XLogSegSize);
+#endif
 	/*
 	 * Zero-fill the file.	We have to do this the hard way to ensure that all
 	 * the file space has really been allocated --- on platforms that allow

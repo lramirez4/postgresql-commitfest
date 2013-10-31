@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <linux/falloc.h>
 
 #include "miscadmin.h"
 #include "access/xlog.h"
@@ -510,6 +511,10 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	 * if bufmgr.c had to dump another buffer of the same file to make room
 	 * for the new page's buffer.
 	 */
+
+	if(forknum == 1)
+		pg_fallocate(v->mdfd_vfd, FALLOC_FL_KEEP_SIZE, 0, RELSEG_SIZE);
+
 	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
 		ereport(ERROR,
 				(errcode_for_file_access(),

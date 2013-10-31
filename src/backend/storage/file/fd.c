@@ -383,6 +383,21 @@ pg_flush_data(int fd, off_t offset, off_t amount)
 	return 0;
 }
 
+/*
+ * pg_fallocate --- advise OS that the data pre-allocate continus file segments
+ * in physical disk.
+ *
+ * Not all platforms have fallocate. Some platforms only have posix_fallocate,
+ * but it ped zero fill to get pre-allocate file segmnets. It is not good
+ * peformance when extend new segmnets, so we don't use posix_fallocate.
+ */
+int
+pg_fallocate(File file, int flags, off_t offset, off_t nbytes)
+{
+#if defined(HAVE_FALLOCATE)
+	return fallocate(VfdCache[file].fd, flags, offset, nbytes);
+#endif
+}
 
 /*
  * fsync_fname -- fsync a file or directory, handling errors properly
