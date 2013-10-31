@@ -1352,6 +1352,8 @@ typedef struct BitmapHeapScanState
 	TBMIterator *prefetch_iterator;
 	int			prefetch_pages;
 	int			prefetch_target;
+	long		exact_pages;
+	long		lossy_pages;
 } BitmapHeapScanState;
 
 /* ----------------

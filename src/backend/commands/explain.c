@@ -81,6 +81,7 @@ static void show_sort_keys_common(PlanState *planstate,
 					  List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
+static void show_heap_pages(BitmapHeapScanState *planstate, ExplainState *es);
 static void show_instrumentation_count(const char *qlabel, int which,
 						   PlanState *planstate, ExplainState *es);
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
@@ -1246,6 +1247,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (((BitmapHeapScan *) plan)->bitmapqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
+			if (es->analyze)
+				show_heap_pages((BitmapHeapScanState *) planstate, es);
 			/* FALL THRU */
 		case T_SeqScan:
 		case T_ValuesScan:
@@ -1810,6 +1813,29 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 hashtable->nbuckets, hashtable->nbatch,
 							 spacePeakKb);
 		}
+	}
+}
+
+/*
+ * If it's EXPLAIN ANALYZE, show heap page fetches for a BitmapHeapScan node
+ */
+static void
+show_heap_pages(BitmapHeapScanState *planstate, ExplainState *es)
+{
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		appendStringInfoSpaces(es->str, es->indent * 2);
+		appendStringInfoString(es->str, "Heap Blocks:");
+		if (planstate->exact_pages > 0)
+			appendStringInfo(es->str, " exact=%ld", planstate->exact_pages);
+		if (planstate->lossy_pages > 0)
+			appendStringInfo(es->str, " lossy=%ld", planstate->lossy_pages);
+		appendStringInfoChar(es->str, '\n');
+	}
+	else
+	{
+		ExplainPropertyLong("Exact Heap Blocks", planstate->exact_pages, es);
+		ExplainPropertyLong("Lossy Heap Blocks", planstate->lossy_pages, es);
 	}
 }
 

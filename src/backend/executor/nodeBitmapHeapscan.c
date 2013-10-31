@@ -170,6 +170,11 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			 */
 			bitgetpage(scan, tbmres);
 
+			if (tbmres->ntuples >= 0)
+				node->exact_pages++;
+			else
+				node->lossy_pages++;
+
 			/*
 			 * Set rs_cindex to first slot to examine
 			 */
@@ -556,6 +561,8 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	scanstate->prefetch_iterator = NULL;
 	scanstate->prefetch_pages = 0;
 	scanstate->prefetch_target = 0;
+	scanstate->exact_pages = 0;
+	scanstate->lossy_pages = 0;
 
 	/*
 	 * Miscellaneous initialization
