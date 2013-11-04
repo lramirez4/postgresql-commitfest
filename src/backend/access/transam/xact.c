@@ -520,7 +520,7 @@ AssignTransactionId(TransactionState s)
 	 * recovery only because aborted subtransactions are separately WAL
 	 * logged.
 	 */
-	if (isSubXact && XLogStandbyInfoActive())
+	if (isSubXact && XLogIsNeeded())
 	{
 		unreportedXids[nUnreportedXids] = s->transactionId;
 		nUnreportedXids++;
@@ -969,7 +969,7 @@ RecordTransactionCommit(void)
 	/* Get data needed for commit record */
 	nrels = smgrGetPendingDeletes(true, &rels);
 	nchildren = xactGetCommittedChildren(&children);
-	if (XLogStandbyInfoActive())
+	if (XLogIsNeeded())
 		nmsgs = xactGetCommittedInvalidationMessages(&invalMessages,
 													 &RelcacheInitFileInval);
 	wrote_xlog = (XactLastRecEnd != 0);

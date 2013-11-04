@@ -753,7 +753,7 @@ StandbyReleaseOldLocks(int nxids, TransactionId *xids)
  * --------------------------------------------------------------------
  *		Recovery handling for Rmgr RM_STANDBY_ID
  *
- * These record types will only be created if XLogStandbyInfoActive()
+ * These record types will only be created if XLogIsNeeded()
  * --------------------------------------------------------------------
  */
 
@@ -861,7 +861,7 @@ LogStandbySnapshot(void)
 	xl_standby_lock *locks;
 	int			nlocks;
 
-	Assert(XLogStandbyInfoActive());
+	Assert(XLogIsNeeded());
 
 	/*
 	 * Get details of any AccessExclusiveLocks being held at the moment.

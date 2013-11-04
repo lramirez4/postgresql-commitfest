@@ -630,7 +630,7 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 					 * WAL record that will allow us to conflict with queries
 					 * running on standby.
 					 */
-					if (XLogStandbyInfoActive())
+					if (XLogIsNeeded())
 					{
 						BTPageOpaque opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 

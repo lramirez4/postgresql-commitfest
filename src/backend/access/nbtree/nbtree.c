@@ -826,7 +826,7 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * take care to issue the record for last actual block and not for the
 	 * last block that was scanned. Ignore empty indexes.
 	 */
-	if (XLogStandbyInfoActive() &&
+	if (XLogIsNeeded() &&
 		num_pages > 1 && vstate.lastBlockVacuumed < (num_pages - 1))
 	{
 		Buffer		buf;

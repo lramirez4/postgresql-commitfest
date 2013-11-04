@@ -7994,7 +7994,7 @@ CreateCheckPoint(int flags)
 	 * pointer. This allows us to begin accumulating changes to assemble our
 	 * starting snapshot of locks and transactions.
 	 */
-	if (!shutdown && XLogStandbyInfoActive())
+	if (!shutdown && XLogIsNeeded())
 		checkPoint.oldestActiveXid = GetOldestActiveTransactionId();
 	else
 		checkPoint.oldestActiveXid = InvalidTransactionId;
@@ -8189,7 +8189,7 @@ CreateCheckPoint(int flags)
 	 * If we are shutting down, or Startup process is completing crash
 	 * recovery we don't need to write running xact data.
 	 */
-	if (!shutdown && XLogStandbyInfoActive())
+	if (!shutdown && XLogIsNeeded())
 		LogStandbySnapshot();
 
 	START_CRIT_SECTION();
@@ -8990,7 +8990,7 @@ UpdateFullPageWrites(void)
 	 * Write an XLOG_FPW_CHANGE record. This allows us to keep track of
 	 * full_page_writes during archive recovery, if required.
 	 */
-	if (XLogStandbyInfoActive() && !RecoveryInProgress())
+	if (XLogIsNeeded() && !RecoveryInProgress())
 	{
 		XLogRecData rdata;
 

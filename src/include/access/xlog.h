@@ -196,22 +196,18 @@ extern int	num_xloginsert_slots;
 typedef enum WalLevel
 {
 	WAL_LEVEL_MINIMAL = 0,
-	WAL_LEVEL_ARCHIVE,
 	WAL_LEVEL_HOT_STANDBY
 } WalLevel;
 extern int	wal_level;
 
-#define XLogArchivingActive()	(XLogArchiveMode && wal_level >= WAL_LEVEL_ARCHIVE)
+#define XLogArchivingActive()	(XLogArchiveMode && wal_level >= WAL_LEVEL_HOT_STANDBY)
 #define XLogArchiveCommandSet() (XLogArchiveCommand[0] != '\0')
 
 /*
- * Is WAL-logging necessary for archival or log-shipping, or can we skip
- * WAL-logging if we fsync() the data before committing instead?
+ * Is WAL-logging necessary for log-shipping, or can we skip WAL-logging if we
+ * fsync() the data before committing instead?
  */
-#define XLogIsNeeded() (wal_level >= WAL_LEVEL_ARCHIVE)
-
-/* Do we need to WAL-log information required only for Hot Standby? */
-#define XLogStandbyInfoActive() (wal_level >= WAL_LEVEL_HOT_STANDBY)
+#define XLogIsNeeded() (wal_level >= WAL_LEVEL_HOT_STANDBY)
 
 #ifdef WAL_DEBUG
 extern bool XLOG_DEBUG;

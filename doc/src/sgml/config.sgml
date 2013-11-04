@@ -1606,10 +1606,9 @@ include 'filename'
         <varname>wal_level</> determines how much information is written
         to the WAL. The default value is <literal>minimal</>, which writes
         only the information needed to recover from a crash or immediate
-        shutdown. <literal>archive</> adds logging required for WAL archiving,
-        and <literal>hot_standby</> further adds information required to run
-        read-only queries on a standby server.
-        This parameter can only be set at server start.
+        shutdown. <literal>hot_standby</> adds logging required for WAL
+        archiving and information required to run read-only queries on a
+        standby server. This parameter can only be set at server start.
        </para>
        <para>
         In <literal>minimal</> level, WAL-logging of some bulk
@@ -1625,22 +1624,17 @@ include 'filename'
         </simplelist>
         But minimal WAL does not contain
         enough information to reconstruct the data from a base backup and the
-        WAL logs, so either <literal>archive</> or <literal>hot_standby</>
-        level must be used to enable
+        WAL logs <literal>hot_standby</> level must be used to enable
         WAL archiving (<xref linkend="guc-archive-mode">) and streaming
         replication.
        </para>
        <para>
-        In <literal>hot_standby</> level, the same information is logged as
-        with <literal>archive</>, plus information needed to reconstruct
-        the status of running transactions from the WAL. To enable read-only
-        queries on a standby server, <varname>wal_level</> must be set to
-        <literal>hot_standby</> on the primary, and
-        <xref linkend="guc-hot-standby"> must be enabled in the standby. It is
-        thought that there is
-        little measurable difference in performance between using
-        <literal>hot_standby</> and <literal>archive</> levels, so feedback
-        is welcome if any production impacts are noticeable.
+        In <literal>hot_standby</> level, necessary information is logged
+        to reconstruct the status of running transactions from the WAL and
+        to enable read-only queries on a standby server. Note that
+        <varname>wal_level</> must be set to <literal>hot_standby</> on
+        the primary, and <xref linkend="guc-hot-standby"> must be enabled
+        in the standby.
        </para>
       </listitem>
      </varlistentry>
@@ -2198,8 +2192,8 @@ include 'filename'
         of connections, so the parameter cannot be set higher than
         <xref linkend="guc-max-connections">.  This parameter can only
         be set at server start. <varname>wal_level</> must be set
-        to <literal>archive</> or <literal>hot_standby</> to allow
-        connections from standby servers.
+        to <literal>hot_standby</> to allow connections from standby
+        servers.
        </para>
        </listitem>
       </varlistentry>

@@ -800,7 +800,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	if (lockmode >= AccessExclusiveLock &&
 		locktag->locktag_type == LOCKTAG_RELATION &&
 		!RecoveryInProgress() &&
-		XLogStandbyInfoActive())
+		XLogIsNeeded())
 	{
 		LogAccessExclusiveLockPrepare();
 		log_lock = true;

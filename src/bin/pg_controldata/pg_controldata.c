@@ -73,8 +73,6 @@ wal_level_str(WalLevel wal_level)
 	{
 		case WAL_LEVEL_MINIMAL:
 			return "minimal";
-		case WAL_LEVEL_ARCHIVE:
-			return "archive";
 		case WAL_LEVEL_HOT_STANDBY:
 			return "hot_standby";
 	}
