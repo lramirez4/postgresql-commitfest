@@ -180,6 +180,9 @@ PostgreSQL documentation
    <filename>pg_control</> and then exit without modifying anything.
    This is mainly a debugging tool, but can be useful as a sanity check
    before allowing <command>pg_resetxlog</command> to proceed for real.
+   Also if any of the other parameter given along with -n, then it will print values
+   in two sections. In first section it will print all original values and in next section
+   all values which will be on reset.
   </para>
 
   <para>

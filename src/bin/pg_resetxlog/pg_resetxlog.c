@@ -56,6 +56,14 @@
 #include "catalog/pg_control.h"
 #include "common/fe_memutils.h"
 
+ /* Indicate which control file parameter going to be changed*/
+#define DISPLAY_XIDEPOCH	1
+#define DISPLAY_XLOGFILE	2
+#define DISPLAY_MXID		4
+#define DISPLAY_OID			8
+#define DISPLAY_OFFSET		16
+#define DISPLAY_XID			32
+
 extern int	optind;
 extern char *optarg;
 
@@ -68,6 +76,7 @@ static const char *progname;
 static bool ReadControlFile(void);
 static void GuessControlValues(void);
 static void PrintControlValues(bool guessed);
+static void PrintNewControlValues(int changedParam);
 static void RewriteControlFile(void);
 static void FindEndOfXLOG(void);
 static void KillExistingXLOG(void);
@@ -94,6 +103,7 @@ main(int argc, char *argv[])
 	char	   *endptr2;
 	char	   *DataDir;
 	int			fd;
+	int			changedParam = 0;
 
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_resetxlog"));
 
@@ -128,6 +138,7 @@ main(int argc, char *argv[])
 
 			case 'e':
 				set_xid_epoch = strtoul(optarg, &endptr, 0);
+				changedParam |= DISPLAY_XIDEPOCH;
 				if (endptr == optarg || *endptr != '\0')
 				{
 					fprintf(stderr, _("%s: invalid argument for option -e\n"), progname);
@@ -143,6 +154,7 @@ main(int argc, char *argv[])
 
 			case 'x':
 				set_xid = strtoul(optarg, &endptr, 0);
+				changedParam |= DISPLAY_XID;
 				if (endptr == optarg || *endptr != '\0')
 				{
 					fprintf(stderr, _("%s: invalid argument for option -x\n"), progname);
@@ -158,6 +170,7 @@ main(int argc, char *argv[])
 
 			case 'o':
 				set_oid = strtoul(optarg, &endptr, 0);
+				changedParam |= DISPLAY_OID;
 				if (endptr == optarg || *endptr != '\0')
 				{
 					fprintf(stderr, _("%s: invalid argument for option -o\n"), progname);
@@ -173,6 +186,7 @@ main(int argc, char *argv[])
 
 			case 'm':
 				set_mxid = strtoul(optarg, &endptr, 0);
+				changedParam |= DISPLAY_MXID;
 				if (endptr == optarg || *endptr != ',')
 				{
 					fprintf(stderr, _("%s: invalid argument for option -m\n"), progname);
@@ -207,6 +221,7 @@ main(int argc, char *argv[])
 
 			case 'O':
 				set_mxoff = strtoul(optarg, &endptr, 0);
+				changedParam |= DISPLAY_OFFSET;
 				if (endptr == optarg || *endptr != '\0')
 				{
 					fprintf(stderr, _("%s: invalid argument for option -O\n"), progname);
@@ -228,6 +243,7 @@ main(int argc, char *argv[])
 					exit(1);
 				}
 				XLogFromFileName(optarg, &minXlogTli, &minXlogSegNo);
+				changedParam |= DISPLAY_XLOGFILE;
 				break;
 
 			default:
@@ -301,6 +317,10 @@ main(int argc, char *argv[])
 	 */
 	FindEndOfXLOG();
 
+ 	/* print current control file parameter value if -n is given*/
+	if (noupdate)
+		PrintControlValues(guessed);	
+
 	/*
 	 * Adjust fields if required by switches.  (Do this now so that printout,
 	 * if any, includes these values.)
@@ -350,11 +370,18 @@ main(int argc, char *argv[])
 	if (minXlogSegNo > newXlogSegNo)
 		newXlogSegNo = minXlogSegNo;
 
+	/* Print only new values to be reset if -n is given*/
+ 	if (noupdate)
+	{
+		PrintNewControlValues(changedParam);
+		exit(0);
+	}	
+
 	/*
 	 * If we had to guess anything, and -f was not given, just print the
-	 * guessed values and exit.  Also print if -n is given.
+	 * guessed values and exit.
 	 */
-	if ((guessed && !force) || noupdate)
+	if (guessed && !force)
 	{
 		PrintControlValues(guessed);
 		if (!noupdate)
@@ -561,7 +588,7 @@ PrintControlValues(bool guessed)
 	if (guessed)
 		printf(_("Guessed pg_control values:\n\n"));
 	else
-		printf(_("pg_control values:\n\n"));
+		printf(_("Current pg_control values:\n\n"));
 
 	/*
 	 * Format system_identifier separately to keep platform-dependent format
@@ -630,6 +657,64 @@ PrintControlValues(bool guessed)
 		   ControlFile.data_checksum_version);
 }
 
+
+ /*
+  * Print the values to be changed after pg_resetxlog.
+  *
+  * NB: this display should be just for those fields that are 
+  * going to change after reset.
+  */
+static void
+PrintNewControlValues(int changedParam)
+{
+ 	if (changedParam)
+	 	printf(_("\n\nValues to be used after reset:\n\n"));
+ 
+ 	if (changedParam & DISPLAY_XLOGFILE)
+ 	{	
+ 		printf(_("First log file ID:                    %u\n"),
+ 			   (uint32) ((newXlogSegNo) / XLogSegmentsPerXLogId));
+ 		printf(_("First log file segment:               %u\n"),
+ 			   (uint32) ((newXlogSegNo) % XLogSegmentsPerXLogId));
+ 		printf(_("TimeLineID:                           %u\n"),
+ 			   ControlFile.checkPointCopy.ThisTimeLineID);	
+ 	}
+ 
+ 	if (changedParam & DISPLAY_MXID)
+ 	{
+ 		printf(_("NextMultiXactId:                      %u\n"),
+ 			   ControlFile.checkPointCopy.nextMulti);		
+ 		printf(_("oldestMultiXid:                       %u\n"),
+ 		   ControlFile.checkPointCopy.oldestMulti);
+ 	}
+ 
+ 	if (changedParam & DISPLAY_OFFSET)
+ 	{
+ 		printf(_("NextMultiOffset:                      %u\n"),
+ 			   ControlFile.checkPointCopy.nextMultiOffset);	
+ 	}
+ 
+ 	if (changedParam & DISPLAY_OID)
+ 	{
+ 		printf(_("NextOID:                              %u\n"),
+ 			   ControlFile.checkPointCopy.nextOid);	
+ 	}
+ 
+ 	if (changedParam & DISPLAY_XID)
+ 	{
+ 		printf(_("NextXID:                              %u\n"),
+ 		   ControlFile.checkPointCopy.nextXid);
+ 		printf(_("oldestXID:                            %u\n"),
+ 		   ControlFile.checkPointCopy.oldestXid);
+ 	}
+ 
+ 	if (changedParam & DISPLAY_XIDEPOCH)
+ 	{
+ 		printf(_("NextXID Epoch:                        %u\n"),
+ 		   ControlFile.checkPointCopy.nextXidEpoch);
+ 	}
+}
+ 
 
 /*
  * Write out the new pg_control file.
@@ -1039,7 +1124,7 @@ usage(void)
 	printf(_("  -f               force update to be done\n"));
 	printf(_("  -l XLOGFILE      force minimum WAL starting location for new transaction log\n"));
 	printf(_("  -m MXID,MXID     set next and oldest multitransaction ID\n"));
-	printf(_("  -n               no update, just show extracted control values (for testing)\n"));
+	printf(_("  -n               no update, just show extracted control values (for testing) and to be reset values of parameters(if given)\n"));
 	printf(_("  -o OID           set next OID\n"));
 	printf(_("  -O OFFSET        set next multitransaction offset\n"));
 	printf(_("  -V, --version    output version information, then exit\n"));
