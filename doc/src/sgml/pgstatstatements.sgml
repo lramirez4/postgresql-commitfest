@@ -56,28 +56,35 @@
       <entry><literal><link linkend="catalog-pg-database"><structname>pg_database</structname></link>.oid</literal></entry>
       <entry>OID of database in which the statement was executed</entry>
      </row>
-
-    <row>
+     
+     <row>
       <entry><structfield>query</structfield></entry>
       <entry><type>text</type></entry>
       <entry></entry>
       <entry>Text of a representative statement (up to <xref linkend="guc-track-activity-query-size"> bytes)</entry>
      </row>
-
+     
+     <row>
+      <entry><structfield>query_id</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry></entry>
+      <entry>Unique value for each representative statement.Users with insufficient privileges will see -1</entry>
+     </row>
+     
      <row>
       <entry><structfield>calls</structfield></entry>
       <entry><type>bigint</type></entry>
       <entry></entry>
       <entry>Number of times executed</entry>
      </row>
-
+     
      <row>
       <entry><structfield>total_time</structfield></entry>
       <entry><type>double precision</type></entry>
       <entry></entry>
       <entry>Total time spent in the statement, in milliseconds</entry>
      </row>
-
+     
      <row>
       <entry><structfield>rows</structfield></entry>
       <entry><type>bigint</type></entry>
@@ -228,6 +235,7 @@
    might appear as separate entries, if they have different meanings as a
    result of factors such as different <varname>search_path</> settings.
   </para>
+
  </sect2>
 
  <sect2>

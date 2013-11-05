@@ -1,4 +1,4 @@
-/* contrib/pg_stat_statements/pg_stat_statements--1.1.sql */
+/* contrib/pg_stat_statements/pg_stat_statements--1.2.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_stat_statements" to load this file. \quit
@@ -13,6 +13,7 @@ CREATE FUNCTION pg_stat_statements(
     OUT userid oid,
     OUT dbid oid,
     OUT query text,
+    OUT query_id int8,
     OUT calls int8,
     OUT total_time float8,
     OUT rows int8,
