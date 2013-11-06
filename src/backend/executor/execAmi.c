@@ -21,6 +21,7 @@
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeBitmapOr.h"
 #include "executor/nodeCtescan.h"
+#include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
 #include "executor/nodeFunctionscan.h"
 #include "executor/nodeGroup.h"
@@ -197,6 +198,10 @@ ExecReScan(PlanState *node)
 			ExecReScanForeignScan((ForeignScanState *) node);
 			break;
 
+		case T_CustomScanState:
+			ExecReScanCustomScan((CustomScanState *) node);
+			break;
+
 		case T_NestLoopState:
 			ExecReScanNestLoop((NestLoopState *) node);
 			break;
@@ -291,6 +296,10 @@ ExecMarkPos(PlanState *node)
 			ExecValuesMarkPos((ValuesScanState *) node);
 			break;
 
+		case T_CustomScanState:
+			ExecCustomMarkPos((CustomScanState *) node);
+			break;
+
 		case T_MaterialState:
 			ExecMaterialMarkPos((MaterialState *) node);
 			break;
@@ -348,6 +357,10 @@ ExecRestrPos(PlanState *node)
 			ExecValuesRestrPos((ValuesScanState *) node);
 			break;
 
+		case T_CustomScanState:
+			ExecCustomRestrPos((CustomScanState *) node);
+			break;
+
 		case T_MaterialState:
 			ExecMaterialRestrPos((MaterialState *) node);
 			break;
@@ -379,9 +392,9 @@ ExecRestrPos(PlanState *node)
  * and valuesscan support is actually useless code at present.)
  */
 bool
-ExecSupportsMarkRestore(NodeTag plantype)
+ExecSupportsMarkRestore(Path *path)
 {
-	switch (plantype)
+	switch (path->pathtype)
 	{
 		case T_SeqScan:
 		case T_IndexScan:
@@ -391,6 +404,14 @@ ExecSupportsMarkRestore(NodeTag plantype)
 		case T_Material:
 		case T_Sort:
 			return true;
+
+		case T_CustomPath:
+			{
+				int	flags = ((CustomPath *) path)->custom_flags;
+				if (flags & CUSTOM__SUPPORT_MARK_RESTORE)
+					return true;
+				return false;
+			}
 
 		case T_Result:
 
@@ -464,6 +485,15 @@ ExecSupportsBackwardScan(Plan *node)
 		case T_SubqueryScan:
 			return ExecSupportsBackwardScan(((SubqueryScan *) node)->subplan) &&
 				TargetListSupportsBackwardScan(node->targetlist);
+
+		case T_CustomScan:
+			{
+				int		flags = ((CustomScan *) node)->custom_flags;
+
+				if (flags & CUSTOM__SUPPORT_BACKWARD_SCAN)
+					return TargetListSupportsBackwardScan(node->targetlist);
+			}
+			return false;
 
 		case T_Material:
 		case T_Sort:

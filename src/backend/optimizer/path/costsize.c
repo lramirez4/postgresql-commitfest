@@ -130,9 +130,6 @@ static MergeScanSelCache *cached_scansel(PlannerInfo *root,
 static void cost_rescan(PlannerInfo *root, Path *path,
 			Cost *rescan_startup_cost, Cost *rescan_total_cost);
 static bool cost_qual_eval_walker(Node *node, cost_qual_eval_context *context);
-static void get_restriction_qual_cost(PlannerInfo *root, RelOptInfo *baserel,
-						  ParamPathInfo *param_info,
-						  QualCost *qpqual_cost);
 static bool has_indexed_join_quals(NestPath *joinpath);
 static double approx_tuple_count(PlannerInfo *root, JoinPath *path,
 				   List *quals);
@@ -2312,7 +2309,7 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 	 * it off does not entitle us to deliver an invalid plan.
 	 */
 	else if (innersortkeys == NIL &&
-			 !ExecSupportsMarkRestore(inner_path->pathtype))
+			 !ExecSupportsMarkRestore(inner_path))
 		path->materialize_inner = true;
 
 	/*
@@ -3201,7 +3198,7 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
  * some of the quals.  We assume baserestrictcost was previously set by
  * set_baserel_size_estimates().
  */
-static void
+void
 get_restriction_qual_cost(PlannerInfo *root, RelOptInfo *baserel,
 						  ParamPathInfo *param_info,
 						  QualCost *qpqual_cost)

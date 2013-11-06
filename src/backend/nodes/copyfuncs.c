@@ -602,6 +602,33 @@ _copyForeignScan(const ForeignScan *from)
 }
 
 /*
+ * _copyCustomScan
+ */
+static CustomScan *
+_copyCustomScan(const CustomScan *from)
+{
+	CustomScan *newnode = makeNode(CustomScan);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyScanFields((const Scan *) from, (Scan *) newnode);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_STRING_FIELD(custom_name);
+	COPY_SCALAR_FIELD(custom_flags);
+	COPY_NODE_FIELD(custom_private);
+	COPY_NODE_FIELD(custom_exprs);
+
+	COPY_NODE_FIELD(subqry_plan);
+	COPY_NODE_FIELD(funcexpr);
+
+	return newnode;
+}
+
+/*
  * CopyJoinFields
  *
  *		This function copies the fields of the Join node.  It is used by
@@ -3928,6 +3955,9 @@ copyObject(const void *from)
 			break;
 		case T_ForeignScan:
 			retval = _copyForeignScan(from);
+			break;
+		case T_CustomScan:
+			retval = _copyCustomScan(from);
 			break;
 		case T_Join:
 			retval = _copyJoin(from);
