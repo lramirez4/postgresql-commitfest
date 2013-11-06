@@ -883,6 +883,18 @@ include 'filename'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-ssl-prefer-server-ciphers" xreflabel="ssl_prefer_server_ciphers">
+      <term><varname>ssl_prefer_server_ciphers</varname> (<type>bool</type>)</term>
+      <indexterm>
+       <primary><varname>ssl_prefer_server_ciphers</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies whether to prefer client or server ciphersuite.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-password-encryption" xreflabel="password_encryption">
       <term><varname>password_encryption</varname> (<type>boolean</type>)</term>
       <indexterm>
