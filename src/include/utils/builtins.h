@@ -657,6 +657,7 @@ extern Datum pg_get_triggerdef_ext(PG_FUNCTION_ARGS);
 extern Datum pg_get_constraintdef(PG_FUNCTION_ARGS);
 extern Datum pg_get_constraintdef_ext(PG_FUNCTION_ARGS);
 extern char *pg_get_constraintdef_string(Oid constraintId);
+extern char *pg_get_viewstmt_definition(Query *viewParse);
 extern Datum pg_get_expr(PG_FUNCTION_ARGS);
 extern Datum pg_get_expr_ext(PG_FUNCTION_ARGS);
 extern Datum pg_get_userbyid(PG_FUNCTION_ARGS);
@@ -1160,6 +1161,7 @@ extern Datum unique_key_recheck(PG_FUNCTION_ARGS);
 
 /* commands/event_trigger.c */
 extern Datum pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS);
+extern Datum pg_event_trigger_get_normalized_commands(PG_FUNCTION_ARGS);
 
 /* commands/extension.c */
 extern Datum pg_available_extensions(PG_FUNCTION_ARGS);

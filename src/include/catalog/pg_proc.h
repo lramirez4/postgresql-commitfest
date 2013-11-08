@@ -4750,6 +4750,9 @@ DESCR("SP-GiST support for quad tree over range");
 /* event triggers */
 DATA(insert OID = 3566 (  pg_event_trigger_dropped_objects		PGNSP PGUID 12 10 100 0 0 f f f f t t s 0 0 2249 "" "{26,26,23,25,25,25,25}" "{o,o,o,o,o,o,o}" "{classid, objid, objsubid, object_type, schema_name, object_name, object_identity}" _null_ pg_event_trigger_dropped_objects _null_ _null_ _null_ ));
 DESCR("list objects dropped by the current command");
+DATA(insert OID = 3567 (  pg_event_trigger_get_normalized_commands PGNSP PGUID 12 10 100 0 0 f f f f t t s 0 0 2249 "" "{25,25}" "{o,o}" "{identity,command}" _null_ pg_event_trigger_get_normalized_commands _null_ _null_ _null_ ));
+
+
 /*
  * Symbolic values for provolatile column: these indicate whether the result
  * of a function is dependent *only* on the values of its explicit arguments,
