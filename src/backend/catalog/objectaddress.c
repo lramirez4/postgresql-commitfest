@@ -423,7 +423,8 @@ static ObjectAddress get_relation_by_qualified_name(ObjectType objtype,
 							   List *objname, Relation *relp,
 							   LOCKMODE lockmode, bool missing_ok);
 static ObjectAddress get_object_address_relobject(ObjectType objtype,
-							 List *objname, Relation *relp, bool missing_ok);
+							 List *objname, Relation *relp,
+							 bool missing_ok, bool missing_parent_ok);
 static ObjectAddress get_object_address_attribute(ObjectType objtype,
 							 List *objname, Relation *relp,
 							 LOCKMODE lockmode, bool missing_ok);
@@ -464,7 +465,8 @@ static void getRelationIdentity(StringInfo buffer, Oid relid);
  */
 ObjectAddress
 get_object_address(ObjectType objtype, List *objname, List *objargs,
-				   Relation *relp, LOCKMODE lockmode, bool missing_ok)
+				   Relation *relp, LOCKMODE lockmode,
+				   bool missing_ok, bool missing_parent_ok)
 {
 	ObjectAddress address;
 	ObjectAddress old_address = {InvalidOid, InvalidOid, 0};
@@ -507,7 +509,9 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 			case OBJECT_TRIGGER:
 			case OBJECT_CONSTRAINT:
 				address = get_object_address_relobject(objtype, objname,
-													   &relation, missing_ok);
+													   &relation,
+													   missing_ok,
+													   missing_parent_ok);
 				break;
 			case OBJECT_DATABASE:
 			case OBJECT_EXTENSION:
@@ -622,7 +626,7 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 		 */
 		if (!OidIsValid(address.objectId))
 		{
-			Assert(missing_ok);
+			Assert(missing_ok || missing_parent_ok);
 			return address;
 		}
 
@@ -898,7 +902,9 @@ get_relation_by_qualified_name(ObjectType objtype, List *objname,
  */
 static ObjectAddress
 get_object_address_relobject(ObjectType objtype, List *objname,
-							 Relation *relp, bool missing_ok)
+							 Relation *relp,
+								 bool missing_ok,
+								 bool missing_parent_ok)
 {
 	ObjectAddress address;
 	Relation	relation = NULL;
@@ -942,42 +948,55 @@ get_object_address_relobject(ObjectType objtype, List *objname,
 
 		/* Extract relation name and open relation. */
 		relname = list_truncate(list_copy(objname), nnames - 1);
-		relation = heap_openrv(makeRangeVarFromNameList(relname),
-							   AccessShareLock);
-		reloid = RelationGetRelid(relation);
+		relation = heap_openrv_extended(makeRangeVarFromNameList(relname),
+							   AccessShareLock,
+							   missing_parent_ok);
 
-		switch (objtype)
+		if (relation != NULL)
 		{
-			case OBJECT_RULE:
-				address.classId = RewriteRelationId;
-				address.objectId = get_rewrite_oid(reloid, depname, missing_ok);
-				address.objectSubId = 0;
-				break;
-			case OBJECT_TRIGGER:
-				address.classId = TriggerRelationId;
-				address.objectId = get_trigger_oid(reloid, depname, missing_ok);
-				address.objectSubId = 0;
-				break;
-			case OBJECT_CONSTRAINT:
-				address.classId = ConstraintRelationId;
-				address.objectId =
-					get_relation_constraint_oid(reloid, depname, missing_ok);
-				address.objectSubId = 0;
-				break;
-			default:
-				elog(ERROR, "unrecognized objtype: %d", (int) objtype);
-				/* placate compiler, which doesn't know elog won't return */
-				address.classId = InvalidOid;
-				address.objectId = InvalidOid;
-				address.objectSubId = 0;
+			reloid = RelationGetRelid(relation);
+
+			switch (objtype)
+			{
+				case OBJECT_RULE:
+					address.classId = RewriteRelationId;
+					address.objectId = get_rewrite_oid(reloid, depname, missing_ok);
+					address.objectSubId = 0;
+					break;
+				case OBJECT_TRIGGER:
+					address.classId = TriggerRelationId;
+					address.objectId = get_trigger_oid(reloid, depname, missing_ok);
+					address.objectSubId = 0;
+					break;
+				case OBJECT_CONSTRAINT:
+					address.classId = ConstraintRelationId;
+					address.objectId =
+						get_relation_constraint_oid(reloid, depname, missing_ok);
+					address.objectSubId = 0;
+					break;
+				default:
+					elog(ERROR, "unrecognized objtype: %d", (int) objtype);
+					/* placate compiler, which doesn't know elog won't return */
+					address.classId = InvalidOid;
+					address.objectId = InvalidOid;
+					address.objectSubId = 0;
+			}
+
+			/* Avoid relcache leak when object not found. */
+			if (!OidIsValid(address.objectId))
+			{
+				heap_close(relation, AccessShareLock);
+				relation = NULL;	/* department of accident prevention */
+				return address;
+			}
 		}
-
-		/* Avoid relcache leak when object not found. */
-		if (!OidIsValid(address.objectId))
+		else
 		{
-			heap_close(relation, AccessShareLock);
-			relation = NULL;	/* department of accident prevention */
-			return address;
+			Assert(missing_parent_ok);
+
+			address.classId = InvalidOid;
+			address.objectId = InvalidOid;
+			address.objectSubId = 0;
 		}
 	}
 

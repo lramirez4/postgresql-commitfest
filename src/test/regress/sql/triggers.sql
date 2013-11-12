@@ -1173,3 +1173,7 @@ select * from self_ref_trigger;
 drop table self_ref_trigger;
 drop function self_ref_trigger_ins_func();
 drop function self_ref_trigger_del_func();
+
+-- fault tolerant trigger
+drop trigger not_exists_trigger on if exists not_exists_table;
+drop trigger if exists not_exists_trigger on if exists not_exists_table;

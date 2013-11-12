@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP TRIGGER [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> ON <replaceable class="PARAMETER">table_name</replaceable> [ CASCADE | RESTRICT ]
+DROP TRIGGER [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> ON  [ IF EXISTS ] <replaceable class="PARAMETER">table_name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -44,8 +44,8 @@ DROP TRIGGER [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> ON 
     <term><literal>IF EXISTS</literal></term>
     <listitem>
      <para>
-      Do not throw an error if the trigger does not exist. A notice is issued
-      in this case.
+      Do not throw an error if the trigger does not exist (or parent table
+      does not exist). A notice is issued in this case.
      </para>
     </listitem>
    </varlistentry>

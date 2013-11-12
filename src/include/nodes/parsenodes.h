@@ -2003,6 +2003,7 @@ typedef struct DropStmt
 	ObjectType	removeType;		/* object type */
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 	bool		missing_ok;		/* skip error if object is missing? */
+	bool		missing_parent_ok;	/* skip error if parent is missing? */
 	bool		concurrent;		/* drop index concurrently? */
 } DropStmt;
 

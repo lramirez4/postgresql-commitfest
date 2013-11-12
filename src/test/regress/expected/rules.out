@@ -2630,3 +2630,10 @@ ALTER RULE "_RETURN" ON rule_v1 RENAME TO abc; -- ON SELECT rule cannot be renam
 ERROR:  renaming an ON SELECT rule is not allowed
 DROP VIEW rule_v1;
 DROP TABLE rule_t1;
+--
+-- fault tolerant drop rule
+--
+DROP RULE IF EXISTS noexistname ON IF EXISTS noexistname;
+NOTICE:  table noexistname" does not exists, skipping
+DROP RULE noexistname ON IF EXISTS noexistname;
+NOTICE:  table noexistname" does not exists, skipping

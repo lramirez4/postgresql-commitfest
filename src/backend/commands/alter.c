@@ -364,7 +364,8 @@ ExecRenameStmt(RenameStmt *stmt)
 				address = get_object_address(stmt->renameType,
 											 stmt->object, stmt->objarg,
 											 &relation,
-											 AccessExclusiveLock, false);
+											 AccessExclusiveLock,
+											 false, false);
 				Assert(relation == NULL);
 
 				catalog = heap_open(address.classId, RowExclusiveLock);
@@ -431,6 +432,7 @@ ExecAlterObjectSchemaStmt(AlterObjectSchemaStmt *stmt)
 											 stmt->objarg,
 											 &relation,
 											 AccessExclusiveLock,
+											 false,
 											 false);
 				Assert(relation == NULL);
 				classId = address.classId;
@@ -725,6 +727,7 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 											 stmt->objarg,
 											 &relation,
 											 AccessExclusiveLock,
+											 false,
 											 false);
 				Assert(relation == NULL);
 				classId = address.classId;

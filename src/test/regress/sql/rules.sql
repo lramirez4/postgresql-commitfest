@@ -1007,3 +1007,9 @@ ALTER RULE "_RETURN" ON rule_v1 RENAME TO abc; -- ON SELECT rule cannot be renam
 
 DROP VIEW rule_v1;
 DROP TABLE rule_t1;
+
+--
+-- fault tolerant drop rule
+--
+DROP RULE IF EXISTS noexistname ON IF EXISTS noexistname;
+DROP RULE noexistname ON IF EXISTS noexistname;

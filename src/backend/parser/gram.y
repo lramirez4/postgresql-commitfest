@@ -3546,6 +3546,7 @@ DropPLangStmt:
 					n->arguments = NIL;
 					n->behavior = $5;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -3556,6 +3557,7 @@ DropPLangStmt:
 					n->objects = list_make1(list_make1(makeString($6)));
 					n->behavior = $7;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -3969,6 +3971,7 @@ DropFdwStmt: DROP FOREIGN DATA_P WRAPPER name opt_drop_behavior
 					n->objects = list_make1(list_make1(makeString($5)));
 					n->arguments = NIL;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->behavior = $6;
 					n->concurrent = false;
 					$$ = (Node *) n;
@@ -3980,6 +3983,7 @@ DropFdwStmt: DROP FOREIGN DATA_P WRAPPER name opt_drop_behavior
 					n->objects = list_make1(list_make1(makeString($7)));
 					n->arguments = NIL;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->behavior = $8;
 					n->concurrent = false;
 					$$ = (Node *) n;
@@ -4131,6 +4135,7 @@ DropForeignServerStmt: DROP SERVER name opt_drop_behavior
 					n->objects = list_make1(list_make1(makeString($3)));
 					n->arguments = NIL;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->behavior = $4;
 					n->concurrent = false;
 					$$ = (Node *) n;
@@ -4142,6 +4147,7 @@ DropForeignServerStmt: DROP SERVER name opt_drop_behavior
 					n->objects = list_make1(list_make1(makeString($5)));
 					n->arguments = NIL;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->behavior = $6;
 					n->concurrent = false;
 					$$ = (Node *) n;
@@ -4512,6 +4518,7 @@ DropTrigStmt:
 					n->arguments = NIL;
 					n->behavior = $6;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -4523,6 +4530,31 @@ DropTrigStmt:
 					n->arguments = NIL;
 					n->behavior = $8;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
+					n->concurrent = false;
+					$$ = (Node *) n;
+				}
+			| DROP TRIGGER name ON IF_P EXISTS any_name opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_TRIGGER;
+					n->objects = list_make1(lappend($7, makeString($3)));
+					n->arguments = NIL;
+					n->behavior = $8;
+					n->missing_ok = false;
+					n->missing_parent_ok = true;
+					n->concurrent = false;
+					$$ = (Node *) n;
+				}
+			| DROP TRIGGER IF_P EXISTS name ON IF_P EXISTS any_name opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_TRIGGER;
+					n->objects = list_make1(lappend($9, makeString($5)));
+					n->arguments = NIL;
+					n->behavior = $10;
+					n->missing_ok = true;
+					n->missing_parent_ok = true;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -5055,6 +5087,7 @@ DropOpClassStmt:
 					n->removeType = OBJECT_OPCLASS;
 					n->behavior = $7;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -5066,6 +5099,7 @@ DropOpClassStmt:
 					n->removeType = OBJECT_OPCLASS;
 					n->behavior = $9;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -5080,6 +5114,7 @@ DropOpFamilyStmt:
 					n->removeType = OBJECT_OPFAMILY;
 					n->behavior = $7;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -5091,6 +5126,7 @@ DropOpFamilyStmt:
 					n->removeType = OBJECT_OPFAMILY;
 					n->behavior = $9;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -5139,6 +5175,7 @@ DropStmt:	DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = $2;
 					n->missing_ok = TRUE;
+					n->missing_parent_ok = false;
 					n->objects = $5;
 					n->arguments = NIL;
 					n->behavior = $6;
@@ -5150,6 +5187,7 @@ DropStmt:	DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = $2;
 					n->missing_ok = FALSE;
+					n->missing_parent_ok = false;
 					n->objects = $3;
 					n->arguments = NIL;
 					n->behavior = $4;
@@ -5161,6 +5199,7 @@ DropStmt:	DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_INDEX;
 					n->missing_ok = FALSE;
+					n->missing_parent_ok = false;
 					n->objects = $4;
 					n->arguments = NIL;
 					n->behavior = $5;
@@ -5172,6 +5211,7 @@ DropStmt:	DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_INDEX;
 					n->missing_ok = TRUE;
+					n->missing_parent_ok = false;
 					n->objects = $6;
 					n->arguments = NIL;
 					n->behavior = $7;
@@ -6635,6 +6675,7 @@ RemoveFuncStmt:
 					n->arguments = list_make1(extractArgTypes($4));
 					n->behavior = $5;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6646,6 +6687,7 @@ RemoveFuncStmt:
 					n->arguments = list_make1(extractArgTypes($6));
 					n->behavior = $7;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6660,6 +6702,7 @@ RemoveAggrStmt:
 					n->arguments = list_make1(extractArgTypes($4));
 					n->behavior = $5;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6671,6 +6714,7 @@ RemoveAggrStmt:
 					n->arguments = list_make1(extractArgTypes($6));
 					n->behavior = $7;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6685,6 +6729,7 @@ RemoveOperStmt:
 					n->arguments = list_make1($4);
 					n->behavior = $5;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6696,6 +6741,7 @@ RemoveOperStmt:
 					n->arguments = list_make1($6);
 					n->behavior = $7;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -6813,6 +6859,7 @@ DropCastStmt: DROP CAST opt_if_exists '(' Typename AS Typename ')' opt_drop_beha
 					n->arguments = list_make1(list_make1($7));
 					n->behavior = $9;
 					n->missing_ok = $3;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
@@ -7821,6 +7868,7 @@ DropRuleStmt:
 					n->arguments = NIL;
 					n->behavior = $6;
 					n->missing_ok = false;
+					n->missing_parent_ok = false;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}
@@ -7832,6 +7880,31 @@ DropRuleStmt:
 					n->arguments = NIL;
 					n->behavior = $8;
 					n->missing_ok = true;
+					n->missing_parent_ok = false;
+					n->concurrent = false;
+					$$ = (Node *) n;
+				}
+			| DROP RULE name ON IF_P EXISTS any_name opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_RULE;
+					n->objects = list_make1(lappend($7, makeString($3)));
+					n->arguments = NIL;
+					n->behavior = $8;
+					n->missing_ok = false;
+					n->missing_parent_ok = true;
+					n->concurrent = false;
+					$$ = (Node *) n;
+				}
+			| DROP RULE IF_P EXISTS name ON IF_P EXISTS any_name opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_RULE;
+					n->objects = list_make1(lappend($9, makeString($5)));
+					n->arguments = NIL;
+					n->behavior = $10;
+					n->missing_ok = true;
+					n->missing_parent_ok = true;
 					n->concurrent = false;
 					$$ = (Node *) n;
 				}

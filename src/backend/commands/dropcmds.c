@@ -31,6 +31,8 @@
 
 static void does_not_exist_skipping(ObjectType objtype,
 						List *objname, List *objargs);
+static void parent_not_exists_skipping(ObjectType objtype,
+						List *objname);
 
 /*
  * Drop one or more objects.
@@ -71,12 +73,17 @@ RemoveObjects(DropStmt *stmt)
 									 objname, objargs,
 									 &relation,
 									 AccessExclusiveLock,
-									 stmt->missing_ok);
+									 stmt->missing_ok,
+									 stmt->missing_parent_ok);
 
 		/* Issue NOTICE if supplied object was not found. */
 		if (!OidIsValid(address.objectId))
 		{
-			does_not_exist_skipping(stmt->removeType, objname, objargs);
+			/* ObjectId can be invalid due missing parent relation */
+			if (stmt->missing_parent_ok && !OidIsValid(address.classId))
+				parent_not_exists_skipping(stmt->removeType, objname);
+			else
+				does_not_exist_skipping(stmt->removeType, objname, objargs);
 			continue;
 		}
 
@@ -243,4 +250,26 @@ does_not_exist_skipping(ObjectType objtype, List *objname, List *objargs)
 		ereport(NOTICE, (errmsg(msg, name)));
 	else
 		ereport(NOTICE, (errmsg(msg, name, args)));
+}
+
+/*
+ * Generate a NOTICE "table does not exists, skipping". It is used when
+ * clause IF EXISTS is twice used.
+ */
+static void
+parent_not_exists_skipping(ObjectType objtype, List *objname)
+{
+	switch (objtype)
+	{
+		case OBJECT_RULE:
+		case OBJECT_TRIGGER:
+			ereport(NOTICE,
+				 (errmsg("table \%s\" does not exists, skipping",
+					NameListToString(list_truncate(list_copy(objname),
+							  list_length(objname) - 1)))));
+			break;
+		default:
+			elog(ERROR, "unexpected object type (%d)", (int) objtype);
+			break;
+	}
 }
