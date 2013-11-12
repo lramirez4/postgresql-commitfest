@@ -13,6 +13,7 @@
 #include "catalog/pg_type.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/syscache.h"
 
 #include "plpython.h"
@@ -26,6 +27,7 @@
 static HTAB *PLy_procedure_cache = NULL;
 
 static PLyProcedure *PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger);
+static void invalidate_procedure_caches(Datum arg, int cacheid, uint32 hashvalue);
 static bool PLy_procedure_argument_valid(PLyTypeInfo *arg);
 static bool PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup);
 static char *PLy_procedure_munge_source(const char *name, const char *src);
@@ -42,6 +44,29 @@ init_procedure_caches(void)
 	hash_ctl.hash = tag_hash;
 	PLy_procedure_cache = hash_create("PL/Python procedures", 32, &hash_ctl,
 									  HASH_ELEM | HASH_FUNCTION);
+	CacheRegisterSyscacheCallback(TRFTYPELANG,
+								  invalidate_procedure_caches,
+								  (Datum) 0);
+}
+
+static void
+invalidate_procedure_caches(Datum arg, int cacheid, uint32 hashvalue)
+{
+	HASH_SEQ_STATUS status;
+	PLyProcedureEntry *hentry;
+
+	Assert(PLy_procedure_cache != NULL);
+
+	/* flush all entries */
+	hash_seq_init(&status, PLy_procedure_cache);
+
+	while ((hentry = (PLyProcedureEntry *) hash_seq_search(&status)))
+	{
+		if (hash_search(PLy_procedure_cache,
+						(void *) &hentry->key,
+						HASH_REMOVE, NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
 }
 
 /*
@@ -166,6 +191,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 	for (i = 0; i < FUNC_MAX_ARGS; i++)
 		PLy_typeinfo_init(&proc->args[i]);
 	proc->nargs = 0;
+	proc->langid = procStruct->prolang;
 	proc->code = proc->statics = NULL;
 	proc->globals = NULL;
 	proc->is_setof = procStruct->proretset;
@@ -220,7 +246,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 			else
 			{
 				/* do the real work */
-				PLy_output_datum_func(&proc->result, rvTypeTup);
+				PLy_output_datum_func(&proc->result, rvTypeTup, proc->langid);
 			}
 
 			ReleaseSysCache(rvTypeTup);
@@ -294,7 +320,8 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 					default:
 						PLy_input_datum_func(&(proc->args[pos]),
 											 types[i],
-											 argTypeTup);
+											 argTypeTup,
+											 proc->langid);
 						break;
 				}
 

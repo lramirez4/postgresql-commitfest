@@ -1870,9 +1870,7 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 	StringInfoData buf;
 	StringInfoData dq;
 	HeapTuple	proctup;
-	HeapTuple	langtup;
 	Form_pg_proc proc;
-	Form_pg_language lang;
 	Datum		tmp;
 	bool		isnull;
 	const char *prosrc;
@@ -1895,12 +1893,6 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is an aggregate function", name)));
 
-	/* Need its pg_language tuple for the language name */
-	langtup = SearchSysCache1(LANGOID, ObjectIdGetDatum(proc->prolang));
-	if (!HeapTupleIsValid(langtup))
-		elog(ERROR, "cache lookup failed for language %u", proc->prolang);
-	lang = (Form_pg_language) GETSTRUCT(langtup);
-
 	/*
 	 * We always qualify the function name, to ensure the right function gets
 	 * replaced.
@@ -1912,7 +1904,7 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 	appendStringInfoString(&buf, ")\n RETURNS ");
 	print_function_rettype(&buf, proctup);
 	appendStringInfo(&buf, "\n LANGUAGE %s\n",
-					 quote_identifier(NameStr(lang->lanname)));
+					 quote_identifier(get_language_name(proc->prolang, false)));
 
 	/* Emit some miscellaneous options on one line */
 	oldlen = buf.len;
@@ -2032,7 +2024,6 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 
 	appendStringInfoChar(&buf, '\n');
 
-	ReleaseSysCache(langtup);
 	ReleaseSysCache(proctup);
 
 	PG_RETURN_TEXT_P(string_to_text(buf.data));

@@ -23,7 +23,9 @@
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_proc_fn.h"
+#include "catalog/pg_transform.h"
 #include "catalog/pg_type.h"
+#include "commands/defrem.h"
 #include "executor/functions.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
@@ -116,6 +118,7 @@ ProcedureCreate(const char *procedureName,
 	ObjectAddress myself,
 				referenced;
 	int			i;
+	Oid			trfid;
 
 	/*
 	 * sanity checks
@@ -624,6 +627,15 @@ ProcedureCreate(const char *procedureName,
 	referenced.objectSubId = 0;
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
+	/* dependency on transform used by return type, if any */
+	if ((trfid = get_transform_oid(returnType, languageObjectId, true)))
+	{
+		referenced.classId = TransformRelationId;
+		referenced.objectId = trfid;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+	}
+
 	/* dependency on parameter types */
 	for (i = 0; i < allParamCount; i++)
 	{
@@ -631,6 +643,15 @@ ProcedureCreate(const char *procedureName,
 		referenced.objectId = allParams[i];
 		referenced.objectSubId = 0;
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+
+		/* dependency on transform used by parameter type, if any */
+		if ((trfid = get_transform_oid(allParams[i], languageObjectId, true)))
+		{
+			referenced.classId = TransformRelationId;
+			referenced.objectId = trfid;
+			referenced.objectSubId = 0;
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+		}
 	}
 
 	/* dependency on parameter default expressions */

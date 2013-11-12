@@ -1740,6 +1740,18 @@ _equalCreateForeignTableStmt(const CreateForeignTableStmt *a, const CreateForeig
 }
 
 static bool
+_equalCreateTransformStmt(const CreateTransformStmt *a, const CreateTransformStmt *b)
+{
+	COMPARE_SCALAR_FIELD(replace);
+	COMPARE_NODE_FIELD(type_name);
+	COMPARE_STRING_FIELD(lang);
+	COMPARE_NODE_FIELD(fromsql);
+	COMPARE_NODE_FIELD(tosql);
+
+	return true;
+}
+
+static bool
 _equalCreateTrigStmt(const CreateTrigStmt *a, const CreateTrigStmt *b)
 {
 	COMPARE_STRING_FIELD(trigname);
@@ -2881,6 +2893,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_CreateForeignTableStmt:
 			retval = _equalCreateForeignTableStmt(a, b);
+			break;
+		case T_CreateTransformStmt:
+			retval = _equalCreateTransformStmt(a, b);
 			break;
 		case T_CreateTrigStmt:
 			retval = _equalCreateTrigStmt(a, b);

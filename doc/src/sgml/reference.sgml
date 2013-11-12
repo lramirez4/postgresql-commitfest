@@ -108,6 +108,7 @@
    &createTSDictionary;
    &createTSParser;
    &createTSTemplate;
+   &createTransform;
    &createTrigger;
    &createType;
    &createUser;
@@ -148,6 +149,7 @@
    &dropTSDictionary;
    &dropTSParser;
    &dropTSTemplate;
+   &dropTransform;
    &dropTrigger;
    &dropType;
    &dropUser;

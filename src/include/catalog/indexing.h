@@ -228,6 +228,11 @@ DECLARE_UNIQUE_INDEX(pg_tablespace_oid_index, 2697, on pg_tablespace using btree
 DECLARE_UNIQUE_INDEX(pg_tablespace_spcname_index, 2698, on pg_tablespace using btree(spcname name_ops));
 #define TablespaceNameIndexId  2698
 
+DECLARE_UNIQUE_INDEX(pg_transform_oid_index, 3780, on pg_transform using btree(oid oid_ops));
+#define TransformOidIndexId	3780
+DECLARE_UNIQUE_INDEX(pg_transform_type_lang_index, 3781, on pg_transform using btree(trftype oid_ops, trflang oid_ops));
+#define TransformTypeLangIndexId  3781
+
 /* This following index is not used for a cache and is not unique */
 DECLARE_INDEX(pg_trigger_tgconstraint_index, 2699, on pg_trigger using btree(tgconstraint oid_ops));
 #define TriggerConstraintIndexId  2699

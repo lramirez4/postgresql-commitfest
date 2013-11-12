@@ -3510,6 +3510,20 @@ _copyCreateForeignTableStmt(const CreateForeignTableStmt *from)
 	return newnode;
 }
 
+static CreateTransformStmt *
+_copyCreateTransformStmt(const CreateTransformStmt *from)
+{
+	CreateTransformStmt *newnode = makeNode(CreateTransformStmt);
+
+	COPY_SCALAR_FIELD(replace);
+	COPY_NODE_FIELD(type_name);
+	COPY_STRING_FIELD(lang);
+	COPY_NODE_FIELD(fromsql);
+	COPY_NODE_FIELD(tosql);
+
+	return newnode;
+}
+
 static CreateTrigStmt *
 _copyCreateTrigStmt(const CreateTrigStmt *from)
 {
@@ -4413,6 +4427,9 @@ copyObject(const void *from)
 			break;
 		case T_CreateForeignTableStmt:
 			retval = _copyCreateForeignTableStmt(from);
+			break;
+		case T_CreateTransformStmt:
+			retval = _copyCreateTransformStmt(from);
 			break;
 		case T_CreateTrigStmt:
 			retval = _copyCreateTrigStmt(from);

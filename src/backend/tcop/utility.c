@@ -214,6 +214,7 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateTableAsStmt:
 		case T_RefreshMatViewStmt:
 		case T_CreateTableSpaceStmt:
+		case T_CreateTransformStmt:
 		case T_CreateTrigStmt:
 		case T_CompositeTypeStmt:
 		case T_CreateEnumStmt:
@@ -1292,6 +1293,10 @@ ProcessUtilitySlow(Node *parsetree,
 				DefineOpFamily((CreateOpFamilyStmt *) parsetree);
 				break;
 
+			case T_CreateTransformStmt:
+				CreateTransform((CreateTransformStmt *) parsetree);
+				break;
+
 			case T_AlterOpFamilyStmt:
 				AlterOpFamily((AlterOpFamilyStmt *) parsetree);
 				break;
@@ -1948,6 +1953,9 @@ CreateCommandTag(Node *parsetree)
 				case OBJECT_OPFAMILY:
 					tag = "DROP OPERATOR FAMILY";
 					break;
+				case OBJECT_TRANSFORM:
+					tag = "DROP TRANSFORM";
+					break;
 				default:
 					tag = "???";
 			}
@@ -2197,6 +2205,10 @@ CreateCommandTag(Node *parsetree)
 				default:
 					tag = "???";
 			}
+			break;
+
+		case T_CreateTransformStmt:
+			tag = "CREATE TRANSFORM";
 			break;
 
 		case T_CreateTrigStmt:
@@ -2811,6 +2823,10 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_CreateOpFamilyStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateTransformStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

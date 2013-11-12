@@ -106,6 +106,7 @@ typedef enum
 	DO_FDW,
 	DO_FOREIGN_SERVER,
 	DO_DEFAULT_ACL,
+	DO_TRANSFORM,
 	DO_BLOB,
 	DO_BLOB_DATA,
 	DO_PRE_DATA_BOUNDARY,
@@ -409,6 +410,15 @@ typedef struct _castInfo
 	char		castmethod;
 } CastInfo;
 
+typedef struct _transformInfo
+{
+	DumpableObject dobj;
+	Oid			trftype;
+	Oid			trflang;
+	Oid			trffromsql;
+	Oid			trftosql;
+} TransformInfo;
+
 /* InhInfo isn't a DumpableObject, just temporary state */
 typedef struct _inhInfo
 {
@@ -561,6 +571,7 @@ extern RuleInfo *getRules(Archive *fout, int *numRules);
 extern void getTriggers(Archive *fout, TableInfo tblinfo[], int numTables);
 extern ProcLangInfo *getProcLangs(Archive *fout, int *numProcLangs);
 extern CastInfo *getCasts(Archive *fout, int *numCasts);
+extern TransformInfo *getTransforms(Archive *fout, int *numTransforms);
 extern void getTableAttrs(Archive *fout, TableInfo *tbinfo, int numTables);
 extern bool shouldPrintColumn(TableInfo *tbinfo, int colno);
 extern TSParserInfo *getTSParsers(Archive *fout, int *numTSParsers);

@@ -76,6 +76,7 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	PG_TRY();
 	{
 		int			i;
+		PLyExecutionContext *exec_ctx = PLy_current_execution_context();
 
 		/*
 		 * the other loop might throw an exception, if PLyTypeInfo member
@@ -131,7 +132,7 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 			plan->types[i] = typeId;
 			typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 			if (typeStruct->typtype != TYPTYPE_COMPOSITE)
-				PLy_output_datum_func(&plan->args[i], typeTup);
+				PLy_output_datum_func(&plan->args[i], typeTup, exec_ctx->curr_proc->langid);
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

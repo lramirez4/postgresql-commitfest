@@ -200,6 +200,12 @@ does_not_exist_skipping(ObjectType objtype, List *objname, List *objargs)
 			args = format_type_be(typenameTypeId(NULL,
 											(TypeName *) linitial(objargs)));
 			break;
+		case OBJECT_TRANSFORM:
+			msg = gettext_noop("transform for type %s language %s does not exist, skipping");
+			name = format_type_be(typenameTypeId(NULL,
+								  (TypeName *) linitial(objname)));
+			args = (char *) linitial(objargs);
+			break;
 		case OBJECT_TRIGGER:
 			msg = gettext_noop("trigger \"%s\" for table \"%s\" does not exist, skipping");
 			name = strVal(llast(objname));
