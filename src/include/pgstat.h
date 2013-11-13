@@ -332,6 +332,7 @@ typedef struct PgStat_MsgVacuum
 	bool		m_autovacuum;
 	TimestampTz m_vacuumtime;
 	PgStat_Counter m_tuples;
+	PgStat_Counter m_dead_tuples;
 } PgStat_MsgVacuum;
 
 
@@ -773,7 +774,7 @@ extern void pgstat_reset_single_counter(Oid objectid, PgStat_Single_Reset_Type t
 
 extern void pgstat_report_autovac(Oid dboid);
 extern void pgstat_report_vacuum(Oid tableoid, bool shared,
-					 PgStat_Counter tuples);
+					 PgStat_Counter tuples, PgStat_Counter dead_tuples);
 extern void pgstat_report_analyze(Relation rel,
 					  PgStat_Counter livetuples, PgStat_Counter deadtuples);
 

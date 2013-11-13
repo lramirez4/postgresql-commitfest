@@ -185,6 +185,11 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 	BlockNumber new_rel_allvisible;
 	TransactionId new_frozen_xid;
 	MultiXactId new_min_multi;
+	PgStat_StatTabEntry *tabentry = NULL;
+	int64		dead_tuples = 0;
+	int64		new_dead_tuples = 0;
+
+
 
 	/* measure elapsed time iff autovacuum logging requires it */
 	if (IsAutoVacuumWorkerProcess() && Log_autovacuum_min_duration >= 0)
@@ -214,6 +219,16 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 	vacrelstats->num_index_scans = 0;
 	vacrelstats->pages_removed = 0;
 	vacrelstats->lock_waiter_detected = false;
+
+	/*
+	 * Get the data in the table's hashtable entry.
+	 */
+	if (IsAutoVacuumWorkerProcess())
+	{
+		tabentry = pgstat_fetch_stat_tabentry(RelationGetRelid(onerel));
+		if (tabentry != NULL)
+			dead_tuples = tabentry->n_dead_tuples;
+	}
 
 	/* Open all indexes of the relation */
 	vac_open_indexes(onerel, RowExclusiveLock, &nindexes, &Irel);
@@ -285,10 +300,15 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 						new_frozen_xid,
 						new_min_multi);
 
+	/* calculate the number of new dead tuples */
+	if (tabentry != NULL)
+		new_dead_tuples = tabentry->n_dead_tuples - dead_tuples;
+
 	/* report results to the stats collector, too */
 	pgstat_report_vacuum(RelationGetRelid(onerel),
 						 onerel->rd_rel->relisshared,
-						 new_rel_tuples);
+						 new_rel_tuples,
+						 new_dead_tuples);
 
 	/* and log the action if appropriate */
 	if (IsAutoVacuumWorkerProcess() && Log_autovacuum_min_duration >= 0)
