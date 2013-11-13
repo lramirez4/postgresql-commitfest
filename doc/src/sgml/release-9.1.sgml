@@ -4939,7 +4939,7 @@
       <listitem>
        <para>
         Add <filename>recovery.conf</> setting <link
-        linkend="pause-at-recovery-target"><varname>pause_at_recovery_target</></link>
+        linkend="guc-pause-at-recovery-target"><varname>pause_at_recovery_target</></link>
         to pause recovery at target (Simon Riggs)
        </para>
 
@@ -4959,7 +4959,7 @@
        <para>
         These named restore points can be specified as recovery
         targets using the new <filename>recovery.conf</> setting
-        <link linkend="recovery-target-name"><varname>recovery_target_name</></link>.
+        <link linkend="guc-recovery-target-name"><varname>recovery_target_name</></link>.
        </para>
       </listitem>
 
@@ -4991,8 +4991,7 @@
 
       <listitem>
        <para>
-        Allow <link
-        linkend="recovery-config"><filename>recovery.conf</></link>
+        Allow <filename>recovery.conf</>
         to use the same quoting behavior as <filename>postgresql.conf</>
         (Dimitri Fontaine)
        </para>
