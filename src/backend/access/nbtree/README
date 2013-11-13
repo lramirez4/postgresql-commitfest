@@ -168,6 +168,9 @@ parent item does still exist and can't have been deleted.  Also, because
 we are matching downlink page numbers and not data keys, we don't have any
 problem with possibly misidentifying the parent item.
 
+Page Deletion
+-------------
+
 We consider deleting an entire page from the btree only when it's become
 completely empty of items.  (Merging partly-full pages would allow better
 space reuse, but it seems impractical to move existing data items left or
@@ -176,18 +179,20 @@ might miss the items if so.)  Also, we *never* delete the rightmost page
 on a tree level (this restriction simplifies the traversal algorithms, as
 explained below).
 
-To delete an empty page, we acquire write lock on its left sibling (if
-any), the target page itself, the right sibling (there must be one), and
-the parent page, in that order.  The parent page must be found using the
-same type of search as used to find the parent during an insertion split.
-Then we update the side-links in the siblings, mark the target page
-deleted, and remove the downlink from the parent, as well as the parent's
-upper bounding key for the target (the one separating it from its right
-sibling).  This causes the target page's key space to effectively belong
-to its right sibling.  (Neither the left nor right sibling pages need to
-change their "high key" if any; so there is no problem with possibly not
-having enough space to replace a high key.)  The side-links in the target
-page are not changed.
+Page deletion always begins at the leaf level. An internal page can only be
+deleted as part of a branch leading to a leaf page, where each internal page
+has only one child and that child is also to be deleted.
+
+Page deletion is a two-stage process. First, the parent page must be found
+using the same type of search as used to find the parent during an insertion
+split. We lock the target and the parent pages, change the target's downlink
+to point to the right sibling, and remove its old downlink. This causes the
+target page's key space to effectively belong to its right sibling.  (Neither
+the left nor right sibling pages need to change their "high key" if any; so
+there is no problem with possibly not having enough space to replace a high
+key.)  At the same time, we mark the target page as half-dead, which causes
+any subsequent searches to ignore it and move right (or left, in a backwards
+scan).
 
 (Note: Lanin and Shasha prefer to make the key space move left, but their
 argument for doing so hinges on not having left-links, which we have
@@ -199,31 +204,43 @@ the same parent --- otherwise, the parent's key space assignment changes
 too, meaning we'd have to make bounding-key updates in its parent, and
 perhaps all the way up the tree.  Since we can't possibly do that
 atomically, we forbid this case.  That means that the rightmost child of a
-parent node can't be deleted unless it's the only remaining child.
+parent node can't be deleted unless it's the only remaining child, in which
+case we will delete the parent too.
 
-When we delete the last remaining child of a parent page, we mark the
-parent page "half-dead" as part of the atomic update that deletes the
-child page.  This implicitly transfers the parent's key space to its right
-sibling (which it must have, since we never delete the overall-rightmost
-page of a level).  Searches ignore the half-dead page and immediately move
-right.  We need not worry about insertions into a half-dead page --- insertions
-into upper tree levels happen only as a result of splits of child pages, and
-the half-dead page no longer has any children that could split.  Therefore
-the page stays empty even when we don't have lock on it, and we can complete
-its deletion in a second atomic action.
+When we're about to delete the last remaining child of a parent page, we
+leave the parent page alone and remove the downlink to the parent page
+instead, in the grandparent. If it's the last child of the grandparent too,
+we recurse up while keeping the leaf page locked, until we find a parent with
+more than one child. We don't need to hold locks on the intermediate pages
+between the leaf and the final parent -- insertions into upper tree levels
+happen only as a result of splits of child pages, and we never split a
+half-dead leaf page. Removing the downlink to the top of the to-be-deleted
+branch effectively transfers the key space to the right sibling for all the
+intermediate levels too, in one atomic operation. A concurrent search might
+still visit the intermediate pages, but it will move right when it reaches
+the half-dead page at the leaf level.
 
-The notion of a half-dead page means that the key space relationship between
-the half-dead page's level and its parent's level may be a little out of
-whack: key space that appears to belong to the half-dead page's parent on the
-parent level may really belong to its right sibling.  To prevent any possible
-problems, we hold lock on the deleted child page until we have finished
-deleting any now-half-dead parent page(s).  This prevents any insertions into
-the transferred keyspace until the operation is complete.  The reason for
-doing this is that a sufficiently large number of insertions into the
-transferred keyspace, resulting in multiple page splits, could propagate keys
-from that keyspace into the parent level, resulting in transiently
-out-of-order keys in that level.  It is thought that that wouldn't cause any
-serious problem, but it seems too risky to allow.
+When we mark the leaf page as half-dead, we also store a link to the top
+of the to-be-deleted branch, ie. the block number of the page whose downlink
+we removed. This is needed in the second phase, to unlink the pages from
+their siblings.
+
+The second phase is to unlink the half-dead leaf page, and any internal pages
+in the to-be-deleted branch. If the half-dead page still has a parent pointing
+to it, ie. if we're removing a whole branch, we unlink the topmost remaining
+parent first. We use the link we stashed in the half-dead leaf page to get its
+block number. That is the target of the unlink operation. We first lock the
+leaf page (unless we're removing the leaf), then the left sibling (if any) of
+the target, the target page itself, and its right sibling (there must be one)
+in that order. Then we update the side-links in the siblings, and mark the
+target page deleted. If the target was the leaf page, we're done. Otherwise we
+update the top-link in leaf page with the next page in the branch we're
+deleting, ie. the only child of the target page. The side-links in the target
+page are not changed.
+
+This is repeated, chewing pages in the branch top-down, until all the internal
+pages above the half-dead leaf page have been removed. Finally, the half-dead
+leaf page itself is removed.
 
 A deleted page cannot be reclaimed immediately, since there may be other
 processes waiting to reference it (ie, search processes that just left the
@@ -396,12 +413,11 @@ metapage update (of the "fast root" link) is performed and logged as part
 of the insertion into the parent level.  When splitting the root page, the
 metapage update is handled as part of the "new root" action.
 
-A page deletion is logged as a single WAL entry covering all four
-required page updates (target page, left and right siblings, and parent)
-as an atomic event.  (Any required fast-root link update is also part
-of the WAL entry.)  If the parent page becomes half-dead but is not
-immediately deleted due to a subsequent crash, there is no loss of
-consistency, and the empty page will be picked up by the next VACUUM.
+Each step in page deletion are logged as separate WAL entries: marking the
+leaf as half-dead and removing the downlink is one record, and unlinking a
+page is a second record. If vacuum is interrupted for some reason, or the
+system crashes, the tree is consistent for searches and insertions. The next
+VACUUM will find the half-dead leaf page and continue the deletion.
 
 Scans during Recovery
 ---------------------
