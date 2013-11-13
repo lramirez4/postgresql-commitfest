@@ -60,15 +60,11 @@ typedef struct sequence_magic
  * session.  This is needed to hold onto nextval/currval state.  (We can't
  * rely on the relcache, since it's only, well, a cache, and may decide to
  * discard entries.)
- *
- * XXX We use linear search to find pre-existing SeqTable entries.	This is
- * good when only a small number of sequences are touched in a session, but
- * would suck with many different sequences.  Perhaps use a hashtable someday.
  */
 typedef struct SeqTableData
 {
+	Oid			relid;			/* pg_class OID of this sequence, hash key must be first */
 	struct SeqTableData *next;	/* link to next SeqTable object */
-	Oid			relid;			/* pg_class OID of this sequence */
 	Oid			filenode;		/* last seen relfilenode of this sequence */
 	LocalTransactionId lxid;	/* xact in which we last did a seq op */
 	bool		last_valid;		/* do we have a valid "last" value? */
@@ -81,7 +77,17 @@ typedef struct SeqTableData
 
 typedef SeqTableData *SeqTable;
 
-static SeqTable seqtab = NULL;	/* Head of list of SeqTable items */
+
+/*
+ * Marks threshold of the number of sequences we store in each backend
+ * in a linear list before we move the list over to a hash table.
+ * This improves performance for backends which must store many hundreds
+ * of sequences.
+ */
+#define SEQ_MOVE_TO_HASHTABLE_THRESHOLD 32
+
+static SeqTable seqlist		= NULL;	/* Head of list of SeqTable items */
+static HTAB		*seqhashtab = NULL; /* Pointer to sequence hash table */
 
 /*
  * last_used_seq is updated by nextval() to point to the last used
@@ -92,6 +98,7 @@ static SeqTableData *last_used_seq = NULL;
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static int64 nextval_internal(Oid relid);
 static Relation open_share_lock(SeqTable seq);
+static void switch_to_hashtable();
 static void init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel);
 static Form_pg_sequence read_seq_tuple(SeqTable elm, Relation rel,
 			   Buffer *buf, HeapTuple seqtuple);
@@ -999,6 +1006,43 @@ open_share_lock(SeqTable seq)
 }
 
 /*
+ * Change from storing sequences in a linear list fashion
+ * to storing them in a hash table for fast lookups
+ */
+static void switch_to_hashtable()
+{
+	SeqTable	next, hentry;
+	HASHCTL		ctl;
+
+	Assert(seqhashtab == NULL);
+
+	MemSet(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(Oid);
+	ctl.entrysize = sizeof(SeqTableData);
+	ctl.hash = oid_hash;
+	ctl.alloc = malloc;
+
+	seqhashtab = hash_create("Sequence table", 1000, &ctl,
+		HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+
+	/* Loop over the linear list and add each item into the hash table */
+	while (seqlist != NULL)
+	{
+		next = seqlist->next;
+
+		hentry = (SeqTable) hash_search(seqhashtab,
+			&seqlist->relid,
+			HASH_ENTER, NULL);
+
+		memcpy(hentry, seqlist, sizeof(SeqTableData));
+		hentry->next = NULL;
+
+		free(seqlist);
+		seqlist = next;
+	}
+}
+
+/*
  * Given a relation OID, open and lock the sequence.  p_elm and p_rel are
  * output parameters.
  */
@@ -1007,22 +1051,51 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 {
 	SeqTable	elm;
 	Relation	seqrel;
-
-	/* Look to see if we already have a seqtable entry for relation */
-	for (elm = seqtab; elm != NULL; elm = elm->next)
-	{
-		if (elm->relid == relid)
-			break;
-	}
+	int			nsequences = 0;
+	bool		found = false;
 
 	/*
-	 * Allocate new seqtable entry if we didn't find one.
-	 *
-	 * NOTE: seqtable entries remain in the list for the life of a backend. If
-	 * the sequence itself is deleted then the entry becomes wasted memory,
-	 * but it's small enough that this should not matter.
+	 * Most workload types will only use a small number of sequences during
+	 * their tasks. However certain workload types will have a much higher
+	 * demand on sequences. For these high demand senarios we'll store these
+	 * sequences in a hash table and since we're unable to tell initally if
+	 * the workload will use many sequences we just start out assuming it won't
+	 * and use a linear list to start of with, then if we reach
+	 * SEQ_MOVE_TO_HASHTABLE_THRESHOLD sequences then we switch over to use a
+	 * hash table.
 	 */
-	if (elm == NULL)
+
+	/* if the hash table exists then we'll search with that */
+	if (seqhashtab != NULL)
+	{
+		elm = (SeqTable) hash_search(seqhashtab, &relid, HASH_ENTER, &found);
+	}
+	else
+	{
+		/* no hash table, so perform linear search for the sequence */
+		for (elm = seqlist; elm != NULL; elm = elm->next, nsequences++)
+	{
+		if (elm->relid == relid)
+			{
+				found = true;
+			break;
+	}
+		}
+
+		if (!found)
+		{
+	/*
+			 * if the number of sequences found in the list has reached
+			 * the threshold then we'll move the list over to a hash table
+	 */
+			if (nsequences == SEQ_MOVE_TO_HASHTABLE_THRESHOLD)
+			{
+				switch_to_hashtable();
+				elm = (SeqTable) hash_search(seqhashtab, &relid, HASH_ENTER, &found);
+
+				Assert(found == false);
+			}
+			else
 	{
 		/*
 		 * Time to make a new seqtable entry.  These entries live as long as
@@ -1033,13 +1106,29 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory")));
+
+				/* put this sequence at the top of the list */
+				elm->next = seqlist;
+				seqlist = elm;
+			}
+		}
+	}
+
+	/*
+	* Allocate new seqtable entry if we didn't find one.
+	*
+	* NOTE: With the exception of the use of DISCARD SEQUENCES or DISCARD ALL
+	* seqtable entries remain in the list for the life of a backend. If
+	* the sequence itself is deleted then the entry becomes wasted memory,
+	* but it's small enough that this should not matter.
+	*/
+	if (!found)
+	{
 		elm->relid = relid;
 		elm->filenode = InvalidOid;
 		elm->lxid = InvalidLocalTransactionId;
 		elm->last_valid = false;
 		elm->last = elm->cached = elm->increment = 0;
-		elm->next = seqtab;
-		seqtab = elm;
 	}
 
 	/*
@@ -1611,11 +1700,19 @@ ResetSequenceCaches(void)
 {
 	SeqTableData *next;
 
-	while (seqtab != NULL)
+	/* we should never have both a list and a table */
+	Assert(!(seqlist && seqhashtab));
+
+	while (seqlist != NULL)
 	{
-		next = seqtab->next;
-		free(seqtab);
-		seqtab = next;
+		next = seqlist->next;
+		free(seqlist);
+		seqlist = next;
+	}
+
+	if (seqhashtab) {
+		hash_destroy(seqhashtab);
+		seqhashtab = NULL;
 	}
 
 	last_used_seq = NULL;
