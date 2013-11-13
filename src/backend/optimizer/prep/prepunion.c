@@ -29,6 +29,7 @@
 #include "postgres.h"
 
 #include <limits.h>
+#include <math.h>
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -60,6 +61,7 @@ typedef struct
 static Plan *recurse_set_operations(Node *setOp, PlannerInfo *root,
 					   double tuple_fraction,
 					   List *colTypes, List *colCollations,
+					   List *groupClauses,
 					   bool junkOK,
 					   int flag, List *refnames_tlist,
 					   List **sortClauses, double *pNumGroups);
@@ -78,7 +80,8 @@ static Plan *generate_nonunion_plan(SetOperationStmt *op, PlannerInfo *root,
 static List *recurse_union_children(Node *setOp, PlannerInfo *root,
 					   double tuple_fraction,
 					   SetOperationStmt *top_union,
-					   List *refnames_tlist);
+					   List *refnames_tlist,
+					   List **child_sortclause);
 static Plan *make_union_unique(SetOperationStmt *op, Plan *plan,
 				  PlannerInfo *root, double tuple_fraction,
 				  List **sortClauses);
@@ -97,7 +100,8 @@ static List *generate_append_tlist(List *colTypes, List *colCollations,
 					  bool flag,
 					  List *input_plans,
 					  List *refnames_tlist);
-static List *generate_setop_grouplist(SetOperationStmt *op, List *targetlist);
+static List *generate_setop_grouplist(List *groupClauses, List *targetlist,
+									  List *sortClauses);
 static void expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte,
 						 Index rti);
 static void make_inh_translation_list(Relation oldrelation,
@@ -152,6 +156,15 @@ plan_set_operations(PlannerInfo *root, double tuple_fraction,
 	Assert(parse->distinctClause == NIL);
 
 	/*
+	 * If there's a top-level ORDER BY, assume we have to fetch all the tuples
+	 * except for UNION. This might be too simplistic given all the hackery
+	 * below to possibly avoid the sort; but the odds of accurate estimates
+	 * here are pretty low anyway.
+	 */
+	if (parse->sortClause && topop->op != SETOP_UNION)
+		tuple_fraction = 0.0;
+
+	/*
 	 * We'll need to build RelOptInfos for each of the leaf subqueries, which
 	 * are RTE_SUBQUERY rangetable entries in this Query.  Prepare the index
 	 * arrays for that.
@@ -186,9 +199,39 @@ plan_set_operations(PlannerInfo *root, double tuple_fraction,
 	 */
 	return recurse_set_operations((Node *) topop, root, tuple_fraction,
 								  topop->colTypes, topop->colCollations,
+								  topop->groupClauses,
 								  true, -1,
 								  leftmostQuery->targetList,
 								  sortClauses, NULL);
+}
+
+/*
+ * save_plannerglobal
+ *
+ * save planner global to allow multiple calls of subquery_planner at the same
+ * global status. This is done apartly from copyObject so as to do medium
+ * shallow copying.
+ */
+static PlannerGlobal *
+save_plannerglobal(const PlannerGlobal *in)
+{
+	PlannerGlobal *save = makeNode(PlannerGlobal);
+
+	save->boundParams		= in->boundParams;
+	save->subplans			= list_copy(in->subplans);
+	save->subroots			= list_copy(in->subroots);
+	save->rewindPlanIDs		= bms_copy(in->rewindPlanIDs);
+	save->finalrtable		= list_copy(in->finalrtable);
+	save->finalrowmarks		= list_copy(in->finalrowmarks); 
+	save->resultRelations	= list_copy(in->resultRelations);
+	save->relationOids		= list_copy(in->relationOids);
+	save->invalItems		= list_copy(in->invalItems);
+	save->nParamExec		= in->nParamExec;
+	save->lastPHId			= in->lastPHId;
+	save->lastRowMarkId		= in->lastRowMarkId;
+	save->transientPlan		= in->transientPlan;
+
+	return save;
 }
 
 /*
@@ -198,6 +241,7 @@ plan_set_operations(PlannerInfo *root, double tuple_fraction,
  * tuple_fraction: fraction of tuples we expect to retrieve from node
  * colTypes: OID list of set-op's result column datatypes
  * colCollations: OID list of set-op's result column collations
+ * groupClauses: parent setop's grouping clause.
  * junkOK: if true, child resjunk columns may be left in the result
  * flag: if >= 0, add a resjunk output column indicating value of flag
  * refnames_tlist: targetlist to take column names from
@@ -215,6 +259,7 @@ static Plan *
 recurse_set_operations(Node *setOp, PlannerInfo *root,
 					   double tuple_fraction,
 					   List *colTypes, List *colCollations,
+					   List *groupClauses,
 					   bool junkOK,
 					   int flag, List *refnames_tlist,
 					   List **sortClauses, double *pNumGroups)
@@ -223,13 +268,20 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 	{
 		RangeTblRef *rtr = (RangeTblRef *) setOp;
 		RangeTblEntry *rte = root->simple_rte_array[rtr->rtindex];
-		Query	   *subquery = rte->subquery;
+		Query	   *subquery = rte->subquery,
+				   *pdquery;
 		RelOptInfo *rel;
-		PlannerInfo *subroot;
+		PlannerInfo *subroot,
+					*pdsubroot; /* 'pd' comes from 'Pushed Down' */
+		PlannerGlobal *pdglob;
 		Plan	   *subplan,
-				   *plan;
+				   *plan,
+				   *pdplan;
+		bool		try_pushdown = false;
 
 		Assert(subquery != NULL);
+
+		*sortClauses = NIL;
 
 		/*
 		 * We need to build a RelOptInfo for each leaf subquery.  This isn't
@@ -243,11 +295,124 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 
 		/*
 		 * Generate plan for primitive subquery
+		 *
+		 * Consider whether ORDER BY or groupings of the parent set operation
+		 * can be pushed down onto this subquery.
 		 */
+
+		/*
+		 * Consider whether ORDER BY or groupings of the parent set operation
+		 * can be pushed down onto this subquery.
+		 */
+		if(root->parse->sortClause && !subquery->sortClause &&
+		   tuple_fraction >= 1)
+		{
+			ListCell *lcs, *lcd;
+			int refno = 1;
+
+			/*
+			 * Check if the sort cluase of the root can be applied on this
+			 * subquery. All non-junk tlist items shoud be simple Var and
+			 * their types match and ressortgroupref is ordered in their
+			 * appearance order.
+			 */
+			try_pushdown = true;
+			forboth(lcs, root->parse->targetList, lcd, subquery->targetList)
+			{
+				TargetEntry *ste = (TargetEntry*) lfirst(lcs);
+				TargetEntry *dte = (TargetEntry*) lfirst(lcd);
+				Node *sexpr = (Node*)ste->expr;
+				Node *dexpr = (Node*)dte->expr;
+
+				if (ste->resjunk && dte->resjunk) continue;
+
+				if (ste->resjunk != dte->resjunk ||
+					!IsA(sexpr, Var) || !IsA(dexpr, Var) ||
+					exprType(sexpr) != exprType(dexpr) ||
+					(root->parse->sortClause &&
+					 ste->ressortgroupref != refno++))
+				{
+					try_pushdown = false;
+					break;
+				}
+			}
+		}
+
+		if (try_pushdown)
+		{
+			pdquery = copyObject(subquery);
+
+			if (!pdquery->sortClause)
+			{
+				ListCell *lcs, *lcd;
+
+				pdquery->sortClause = root->parse->sortClause;
+
+				forboth(lcs, root->parse->targetList,
+						lcd, pdquery->targetList)
+				{
+					TargetEntry *ste = (TargetEntry*) lfirst(lcs);
+					TargetEntry *dte = (TargetEntry*) lfirst(lcd);
+					dte->ressortgroupref = ste->ressortgroupref;
+				}
+			}
+			
+			/*
+			 * Pushing down groupings. Set operations doesn't accept
+			 * distinct clauses.
+			 */
+			if (!pdquery->setOperations &&
+				!pdquery->distinctClause && groupClauses)
+
+				pdquery->distinctClause =
+					generate_setop_grouplist(groupClauses,
+											 pdquery->targetList,
+											 pdquery->sortClause);
+
+			if (tuple_fraction >= 1 &&
+				!pdquery->limitCount && !pdquery->limitOffset)
+				pdquery->limitCount =
+					(Node*)makeConst(INT8OID, -1, InvalidOid, sizeof(int64),
+									 Int64GetDatum(tuple_fraction),
+									 false, FLOAT8PASSBYVAL);
+
+			pdglob = save_plannerglobal(root->glob);
+		}
+		
 		subplan = subquery_planner(root->glob, subquery,
 								   root,
 								   false, tuple_fraction,
 								   &subroot);
+
+		if (try_pushdown)
+		{
+			pdplan = subquery_planner(pdglob, pdquery,
+									  root,
+									  false, tuple_fraction,
+									  &pdsubroot);
+
+			if (pdplan->total_cost < subplan->total_cost)
+			{
+				subplan = pdplan;
+				subroot = pdsubroot;
+				/*
+				 * Glob cannot be moved because this is referred to from
+				 * many places by its address. So set the address of the
+				 * original glob to subroot, then copy new values there.
+				 */
+				subroot->glob = root->glob;
+				*root->glob = *pdglob;
+			}
+		}
+
+		/*
+		 * This plan is sorted on sortClause if any, else sorted
+		 * on distinctClause.
+		 */
+		if (subquery->sortClause)
+			*sortClauses = subquery->sortClause;
+		else
+			*sortClauses = subquery->distinctClause;
 
 		/* Save subroot and subplan in RelOptInfo for setrefs.c */
 		rel->subplan = subplan;
@@ -289,12 +454,6 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 							  NIL,
 							  rtr->rtindex,
 							  subplan);
-
-		/*
-		 * We don't bother to determine the subquery's output ordering since
-		 * it won't be reflected in the set-op result anyhow.
-		 */
-		*sortClauses = NIL;
 
 		return plan;
 	}
@@ -379,12 +538,14 @@ generate_recursion_plan(SetOperationStmt *setOp, PlannerInfo *root,
 	 */
 	lplan = recurse_set_operations(setOp->larg, root, tuple_fraction,
 								   setOp->colTypes, setOp->colCollations,
+								   setOp->groupClauses,
 								   false, -1,
 								   refnames_tlist, sortClauses, NULL);
 	/* The right plan will want to look at the left one ... */
 	root->non_recursive_plan = lplan;
 	rplan = recurse_set_operations(setOp->rarg, root, tuple_fraction,
 								   setOp->colTypes, setOp->colCollations,
+								   setOp->groupClauses,
 								   false, -1,
 								   refnames_tlist, sortClauses, NULL);
 	root->non_recursive_plan = NULL;
@@ -409,7 +570,8 @@ generate_recursion_plan(SetOperationStmt *setOp, PlannerInfo *root,
 		double		dNumGroups;
 
 		/* Identify the grouping semantics */
-		groupList = generate_setop_grouplist(setOp, tlist);
+		groupList =
+			generate_setop_grouplist(setOp->groupClauses, tlist, NULL);
 
 		/* We only support hashing here */
 		if (!grouping_is_hashable(groupList))
@@ -452,20 +614,7 @@ generate_union_plan(SetOperationStmt *op, PlannerInfo *root,
 	List	   *planlist;
 	List	   *tlist;
 	Plan	   *plan;
-
-	/*
-	 * If plain UNION, tell children to fetch all tuples.
-	 *
-	 * Note: in UNION ALL, we pass the top-level tuple_fraction unmodified to
-	 * each arm of the UNION ALL.  One could make a case for reducing the
-	 * tuple fraction for later arms (discounting by the expected size of the
-	 * earlier arms' results) but it seems not worth the trouble. The normal
-	 * case where tuple_fraction isn't already zero is a LIMIT at top level,
-	 * and passing it down as-is is usually enough to get the desired result
-	 * of preferring fast-start plans.
-	 */
-	if (!op->all)
-		tuple_fraction = 0.0;
+	List	   *lsort, *rsort;
 
 	/*
 	 * If any of my children are identical UNION nodes (same op, all-flag, and
@@ -475,34 +624,99 @@ generate_union_plan(SetOperationStmt *op, PlannerInfo *root,
 	 */
 	planlist = list_concat(recurse_union_children(op->larg, root,
 												  tuple_fraction,
-												  op, refnames_tlist),
+												  op, refnames_tlist,
+												  &lsort),
 						   recurse_union_children(op->rarg, root,
 												  tuple_fraction,
-												  op, refnames_tlist));
+												  op, refnames_tlist,
+												  &rsort));
 
 	/*
-	 * Generate tlist for Append plan node.
+	 * Generate tlist for Append/MergeAppend plan node.
 	 *
-	 * The tlist for an Append plan isn't important as far as the Append is
-	 * concerned, but we must make it look real anyway for the benefit of the
-	 * next plan level up.
+	 * The tlist for an Append/MergeAppend plan isn't important as far as the
+	 * they are concerned, but we must make it look real anyway for the
+	 * benefit of the next plan level up.
 	 */
 	tlist = generate_append_tlist(op->colTypes, op->colCollations, false,
 								  planlist, refnames_tlist);
 
-	/*
-	 * Append the child results together.
-	 */
-	plan = (Plan *) make_append(planlist, tlist);
+	if (lsort != NIL && equal(lsort, rsort))
+	{
+		/*
+		 * Generate MergeAppend plan if both children are sorted on the same
+		 * sort clause or groupClauses.
+		 */
+		ListCell *lc, *slc;
+		int i = 0;
+		double total_size;
+		Plan *p;
+		List *distinctClause;
 
-	/*
-	 * For UNION ALL, we just need the Append plan.  For UNION, need to add
-	 * node(s) to remove duplicates.
-	 */
-	if (op->all)
-		*sortClauses = NIL;		/* result of UNION ALL is always unsorted */
+		MergeAppend *node = makeNode(MergeAppend);
+		node->plan.targetlist = tlist;
+		node->plan.qual = NIL;
+		node->plan.lefttree = NULL;
+		node->plan.righttree = NULL;
+		node->mergeplans = planlist;
+		node->numCols = list_length(root->parse->targetList);
+		node->sortColIdx    = (AttrNumber*)palloc(sizeof(AttrNumber) * node->numCols);
+		node->sortOperators = (Oid*)palloc(sizeof(Oid) * node->numCols);
+		node->collations    = (Oid*)palloc(sizeof(Oid) * node->numCols);
+		node->nullsFirst    = (bool*)palloc(sizeof(bool) * node->numCols);
+
+		distinctClause = 
+			generate_setop_grouplist(op->groupClauses,
+									 node->plan.targetlist,
+									 root->parse->sortClause);
+		forboth (slc, distinctClause, lc, node->plan.targetlist)
+		{
+			TargetEntry *te = (TargetEntry*) lfirst(lc);
+			SortGroupClause *sgc = (SortGroupClause *) lfirst(slc);
+
+			Assert(sgc->tleSortGroupRef == te->ressortgroupref);
+			node->sortColIdx[i] = i + 1;
+			node->sortOperators[i] = sgc->sortop;
+			node->collations[i] = exprCollation((Node*)te->expr);
+			node->nullsFirst[i] = sgc->nulls_first;
+			i++;
+		}
+		lc = list_head(node->mergeplans);
+		p = (Plan*) lfirst(lc);
+		node->plan.startup_cost = p->startup_cost;
+		node->plan.total_cost   = p->total_cost;
+		node->plan.plan_rows    = p->plan_rows;
+		total_size             = p->plan_rows * p->plan_width;
+		for_each_cell(lc, lnext(lc))
+		{
+			p = (Plan*) lfirst(lc);
+			node->plan.total_cost += p->total_cost;
+			node->plan.plan_rows  += p->plan_rows;
+			total_size            += p->plan_rows * p->plan_width;
+		}
+		node->plan.plan_width = rint(total_size / node->plan.plan_rows);
+		*sortClauses = root->parse->sortClause;
+		plan = (Plan*)node;
+		if (!op->all)
+			plan = make_union_unique(op, plan, root, tuple_fraction,
+									 &distinctClause);
+	}
 	else
-		plan = make_union_unique(op, plan, root, tuple_fraction, sortClauses);
+	{
+		/*
+		 * Append the child results together.
+		 */
+		plan = (Plan *) make_append(planlist, tlist);
+
+		/*
+		 * For UNION ALL, we just need the Append plan.  For UNION, need to
+		 * add node(s) to remove duplicates.
+		 */
+		*sortClauses = NIL;
+
+		if (!op->all)
+			plan = make_union_unique(op, plan, root, tuple_fraction, sortClauses);
+	}
 
 	/*
 	 * Estimate number of groups if caller wants it.  For now we just assume
@@ -544,12 +758,14 @@ generate_nonunion_plan(SetOperationStmt *op, PlannerInfo *root,
 	lplan = recurse_set_operations(op->larg, root,
 								   0.0 /* all tuples needed */ ,
 								   op->colTypes, op->colCollations,
+								   op->groupClauses,
 								   false, 0,
 								   refnames_tlist,
 								   &child_sortclauses, &dLeftGroups);
 	rplan = recurse_set_operations(op->rarg, root,
 								   0.0 /* all tuples needed */ ,
 								   op->colTypes, op->colCollations,
+								   op->groupClauses,
 								   false, 1,
 								   refnames_tlist,
 								   &child_sortclauses, &dRightGroups);
@@ -589,7 +805,7 @@ generate_nonunion_plan(SetOperationStmt *op, PlannerInfo *root,
 	plan = (Plan *) make_append(planlist, tlist);
 
 	/* Identify the grouping semantics */
-	groupList = generate_setop_grouplist(op, tlist);
+	groupList = generate_setop_grouplist(op->groupClauses, tlist, NULL);
 
 	/* punt if nothing to group on (can this happen?) */
 	if (groupList == NIL)
@@ -678,9 +894,13 @@ static List *
 recurse_union_children(Node *setOp, PlannerInfo *root,
 					   double tuple_fraction,
 					   SetOperationStmt *top_union,
-					   List *refnames_tlist)
+					   List *refnames_tlist,
+					   List **child_sortclauses)
 {
-	List	   *child_sortclauses;
+	List	   *lplan, *rplan;
+	List	   *lsort, *rsort;
+
+	*child_sortclauses = NIL;
 
 	if (IsA(setOp, SetOperationStmt))
 	{
@@ -691,14 +911,23 @@ recurse_union_children(Node *setOp, PlannerInfo *root,
 			equal(op->colTypes, top_union->colTypes))
 		{
 			/* Same UNION, so fold children into parent's subplan list */
-			return list_concat(recurse_union_children(op->larg, root,
-													  tuple_fraction,
-													  top_union,
-													  refnames_tlist),
-							   recurse_union_children(op->rarg, root,
-													  tuple_fraction,
-													  top_union,
-													  refnames_tlist));
+			lplan = recurse_union_children(op->larg, root,
+										   tuple_fraction,
+										   top_union,
+										   refnames_tlist,
+										   &lsort);
+			rplan = recurse_union_children(op->rarg, root,
+										   tuple_fraction,
+										   top_union,
+										   refnames_tlist,
+										   &rsort);
+			/*
+			 * Propagate whether all the descendents are sorted with same
+			 *  sortClause.
+			 */
+			if (lsort != NIL && equal(lsort, rsort))
+				*child_sortclauses = lsort;
+			return list_concat(lplan, rplan);
 		}
 	}
 
@@ -715,13 +944,16 @@ recurse_union_children(Node *setOp, PlannerInfo *root,
 											 tuple_fraction,
 											 top_union->colTypes,
 											 top_union->colCollations,
+											 top_union->groupClauses,
 											 false, -1,
 											 refnames_tlist,
-											 &child_sortclauses, NULL));
+											 child_sortclauses, NULL));
 }
 
 /*
  * Add nodes to the given plan tree to unique-ify the result of a UNION.
+ *
+ * If the sortClause is given, we assume the plan is already sorted on it.
  */
 static Plan *
 make_union_unique(SetOperationStmt *op, Plan *plan,
@@ -731,9 +963,11 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	List	   *groupList;
 	double		dNumGroups;
 	long		numGroups;
+	bool		sort_needed = true;
 
 	/* Identify the grouping semantics */
-	groupList = generate_setop_grouplist(op, plan->targetlist);
+	groupList = generate_setop_grouplist(op->groupClauses,
+										 plan->targetlist, *sortClauses);
 
 	/* punt if nothing to group on (can this happen?) */
 	if (groupList == NIL)
@@ -742,6 +976,9 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 		return plan;
 	}
 
+	if (*sortClauses && equal(*sortClauses, groupList))
+		sort_needed = false;
+	
 	/*
 	 * XXX for the moment, take the number of distinct groups as equal to the
 	 * total input size, ie, the worst case.  This is too conservative, but we
@@ -756,7 +993,8 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	numGroups = (long) Min(dNumGroups, (double) LONG_MAX);
 
 	/* Decide whether to hash or sort */
-	if (choose_hashed_setop(root, groupList, plan,
+	if (sort_needed &&
+		choose_hashed_setop(root, groupList, plan,
 							dNumGroups, dNumGroups, tuple_fraction,
 							"UNION"))
 	{
@@ -778,7 +1016,9 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	else
 	{
 		/* Sort and Unique */
-		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan);
+		if (sort_needed)
+			plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan);
+		
 		plan = (Plan *) make_unique(plan, groupList);
 		plan->plan_rows = dNumGroups;
 		/* We know the sort order of the result */
@@ -1145,23 +1385,34 @@ generate_append_tlist(List *colTypes, List *colCollations,
  * the parser output representation doesn't include a tlist for each
  * setop.  So what we need to do here is copy that list and install
  * proper sortgrouprefs into it and into the targetlist.
+ *
+ * sortClause is consulted if provided to avoid re-sorting with different
+ * orderings on the same keys later.
  */
 static List *
-generate_setop_grouplist(SetOperationStmt *op, List *targetlist)
+generate_setop_grouplist(List  *groupClauses, List *targetlist, 
+						 List *sortClauses)
 {
-	List	   *grouplist = (List *) copyObject(op->groupClauses);
+	List	   *grouplist = (List *) copyObject(groupClauses);
 	ListCell   *lg;
+	ListCell   *ls = NULL;
 	ListCell   *lt;
 	Index		refno = 1;
 
 	lg = list_head(grouplist);
+
+	if (sortClauses)
+		ls = list_head(sortClauses);
+
 	foreach(lt, targetlist)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lt);
-		SortGroupClause *sgc;
+		SortGroupClause *sgc, *sgc_sort = NULL;
 
-		/* tlist shouldn't have any sortgrouprefs yet */
-		Assert(tle->ressortgroupref == 0);
+		/*
+		 * tlist shouldn't have any sortgrouprefs yet, or should be unchanged
+		 */
+		Assert(tle->ressortgroupref == 0 || tle->ressortgroupref == refno);
 
 		if (tle->resjunk)
 			continue;			/* ignore resjunk columns */
@@ -1174,6 +1425,45 @@ generate_setop_grouplist(SetOperationStmt *op, List *targetlist)
 
 		/* we could use assignSortGroupRef here, but seems a bit silly */
 		sgc->tleSortGroupRef = tle->ressortgroupref = refno++;
+		
+		if (ls)
+		{
+			/*
+			 * If sortClauses is provided, try to adjust the sorting order to
+			 * get the chance for omitting sorting for grouping later.
+			 */
+			sgc_sort = (SortGroupClause *) lfirst(ls);
+			ls = lnext(ls);
+			if (sgc->sortop != sgc_sort->sortop)
+			{
+				Oid reverse = InvalidOid;
+				Oid opfamily, opcintype;
+				int16 strategy;
+				
+				if (get_ordering_op_properties(sgc->sortop,
+								&opfamily, &opcintype, &strategy))
+				{
+					switch (strategy)
+					{
+						case BTLessStrategyNumber:
+							strategy = BTGreaterStrategyNumber; break;
+						case BTGreaterStrategyNumber:
+							strategy = BTLessStrategyNumber; break;
+					}
+
+					reverse = get_opfamily_member(opfamily,
+												  opcintype,
+												  opcintype,
+												  strategy);
+					if (sgc_sort->sortop == reverse)
+					{
+						sgc->sortop = reverse;
+						sgc->nulls_first = sgc_sort->nulls_first;
+					}
+				}
+			}
+		}
+			
 	}
 	Assert(lg == NULL);
 	return grouplist;

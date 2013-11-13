@@ -778,9 +778,26 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				Assert(splan->plan.qual == NIL);
 				foreach(l, splan->appendplans)
 				{
-					lfirst(l) = set_plan_refs(root,
-											  (Plan *) lfirst(l),
-											  rtoffset);
+					Append *newp =
+						(Append *)set_plan_refs(root,
+												(Plan *) lfirst(l),
+												rtoffset);
+					/*
+					 * UNION on inherited tables may create directly nested
+					 * Appends in plan tree. This structure can be flatten by
+					 * taking grandchildren into parent.
+					 */
+					if (IsA(newp, Append) && 
+						list_length(newp->appendplans) > 0)
+					{
+						ListCell *plc = list_head(newp->appendplans);
+						lfirst(l) = lfirst(plc);
+						for_each_cell(plc, lnext(plc))
+							l = lappend_cell(splan->appendplans,
+											 l, lfirst(plc));
+					}
+					else
+						lfirst(l) = newp;
 				}
 			}
 			break;
