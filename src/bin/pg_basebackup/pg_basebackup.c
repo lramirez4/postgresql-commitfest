@@ -45,6 +45,7 @@ bool		streamwal = false;
 bool		fastcheckpoint = false;
 bool		writerecoveryconf = false;
 int			standby_message_timeout = 10 * 1000;		/* 10 sec = default */
+int		last_progress_report = 0;
 
 /* Progress counters */
 static uint64 totalsize;
@@ -74,7 +75,7 @@ static PQExpBuffer recoveryconfcontents = NULL;
 /* Function headers */
 static void usage(void);
 static void verify_dir_is_empty_or_create(char *dirname);
-static void progress_report(int tablespacenum, const char *filename);
+static void progress_report(int tablespacenum, const char *filename, int force);
 
 static void ReceiveTarFile(PGconn *conn, PGresult *res, int rownum);
 static void ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum);
@@ -399,11 +400,14 @@ verify_dir_is_empty_or_create(char *dirname)
  * is enabled, also print the current file name.
  */
 static void
-progress_report(int tablespacenum, const char *filename)
+progress_report(int tablespacenum, const char *filename, int force)
 {
 	int			percent = (int) ((totaldone / 1024) * 100 / totalsize);
 	char		totaldone_str[32];
 	char		totalsize_str[32];
+
+	if(!showprogress || (time(NULL) == last_progress_report && !force)) return; /* Max once per second */
+	last_progress_report = time(NULL);
 
 	/*
 	 * Avoid overflowing past 100% or the full size. This may make the total
@@ -850,9 +854,9 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 			}
 		}
 		totaldone += r;
-		if (showprogress)
-			progress_report(rownum, filename);
+		progress_report(rownum, filename, 0);
 	}							/* while (1) */
+	progress_report(rownum, filename, 1);
 
 	if (copybuf != NULL)
 		PQfreemem(copybuf);
@@ -1073,8 +1077,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 				disconnect_and_exit(1);
 			}
 			totaldone += r;
-			if (showprogress)
-				progress_report(rownum, filename);
+			progress_report(rownum, filename, 0);
 
 			current_len_left -= r;
 			if (current_len_left == 0 && current_padding == 0)
@@ -1090,6 +1093,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			}
 		}						/* continuing data in existing file */
 	}							/* loop over all data blocks */
+	progress_report(rownum, filename, 1);
 
 	if (file != NULL)
 	{
@@ -1450,8 +1454,7 @@ BaseBackup(void)
 	tablespacecount = PQntuples(res);
 	for (i = 0; i < PQntuples(res); i++)
 	{
-		if (showprogress)
-			totalsize += atol(PQgetvalue(res, i, 2));
+		totalsize += atol(PQgetvalue(res, i, 2));
 
 		/*
 		 * Verify tablespace directories are empty. Don't bother with the
@@ -1498,7 +1501,7 @@ BaseBackup(void)
 
 	if (showprogress)
 	{
-		progress_report(PQntuples(res), NULL);
+		progress_report(PQntuples(res), NULL, 1);
 		fprintf(stderr, "\n");	/* Need to move to next line */
 	}
 	PQclear(res);
