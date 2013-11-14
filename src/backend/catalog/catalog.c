@@ -102,17 +102,18 @@ GetDatabasePath(Oid dbNode, Oid spcNode)
  *		NB: TOAST relations are considered system relations by this test
  *		for compatibility with the old IsSystemRelationName function.
  *		This is appropriate in many places but not all.  Where it's not,
- *		also check IsToastRelation.
+ *		also check IsToastRelation or use IsCatalogRelation().
  *
- *		We now just test if the relation is in the system catalog namespace;
- *		so it's no longer necessary to forbid user relations from having
- *		names starting with pg_.
+ *		We now just test if the relation is either in the toast namespace, or
+ *		in the system namespace and created during initdb. This way it's no
+ *		longer necessary to forbid user relations from having names starting
+ *		with pg_ and it allows manipulating user defined relations in
+ *		pg_catalog.
  */
 bool
 IsSystemRelation(Relation relation)
 {
-	return IsSystemNamespace(RelationGetNamespace(relation)) ||
-		IsToastNamespace(RelationGetNamespace(relation));
+	return IsSystemClass(RelationGetRelid(relation), relation->rd_rel);
 }
 
 /*
@@ -122,12 +123,60 @@ IsSystemRelation(Relation relation)
  *		search pg_class directly.
  */
 bool
-IsSystemClass(Form_pg_class reltuple)
+IsSystemClass(Oid relid, Form_pg_class reltuple)
 {
-	Oid			relnamespace = reltuple->relnamespace;
+	if (IsToastClass(reltuple))
+		return true;
+	return IsCatalogClass(relid, reltuple);
+}
 
-	return IsSystemNamespace(relnamespace) ||
-		IsToastNamespace(relnamespace);
+/*
+ * IsCatalogRelation
+ *		True iff the relation is a system catalog relation, i.e. a relation
+ *		created in pg_catalog by initdb and their corresponding toast
+ *		relations.
+ *
+ *		In contrast to IsSystemRelation() toast relations are *not* included
+ *		in this set unless they are a catalog relation's toast table.
+ */
+bool
+IsCatalogRelation(Relation relation)
+{
+	return IsCatalogClass(RelationGetRelid(relation), relation->rd_rel);
+}
+
+/*
+ * IsCatalogClass
+ *		True iff the relation is a system catalog relation.
+ *
+ * Check IsCatalogRelation() for details.
+ */
+bool
+IsCatalogClass(Oid relid, Form_pg_class reltuple)
+{
+	Oid         relnamespace = reltuple->relnamespace;
+
+	/*
+	 * Never consider relations outside pg_catalog/pg_toast to be catalog
+	 * relations.
+	 */
+	if (!IsSystemNamespace(relnamespace) && !IsToastNamespace(relnamespace))
+		return false;
+
+	/* ----
+	 * Check whether the oid was assigned during initdb, when creating the
+	 * initial template database. Minus the relations in information_schema
+	 * excluded above, these are integral part of the system.
+	 * We could instead check whether the relation is pinned in pg_depend, but
+	 * this is noticeably cheaper and doesn't require catalog access.
+	 *
+	 * This test is safe since even a oid wraparound will preserve this
+	 * property (c.f. GetNewObjectId()) and it has the advantage that it works
+	 * correctly even if a user decides to create a relation in the pg_catalog
+	 * namespace.
+	 * ----
+	 */
+	return relid < FirstNormalObjectId;
 }
 
 /*
