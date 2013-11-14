@@ -2384,6 +2384,7 @@ symbol
 tablespaceinfo
 teReqs
 teSection
+TestDecodingData
 temp_tablespaces_extra
 text
 timeKEY
