@@ -4943,6 +4943,15 @@ RelationIsAccessibleInLogicalDecodingInternal(Relation relation)
 	if (IsCatalogRelation(relation))
 		return true;
 
+	/*
+	 * Also log relevant data if we want the table to behave as a catalog
+	 * table, although its not a system provided one.
+	 * XXX: we need to make sure both the relation and its toast relation have
+	 * the flag set!
+	 */
+	if (RelationIsUsedAsCatalogTable(relation))
+		return true;
+
 	return false;
 }
 
