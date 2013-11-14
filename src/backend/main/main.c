@@ -188,6 +188,8 @@ main(int argc, char *argv[])
 		AuxiliaryProcessMain(argc, argv);		/* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)
 		GucInfoMain();			/* does not return */
+	else if (argc > 1 && strncmp(argv[1], "--child=", 8) == 0)
+		ChildPostgresMain(argc, argv, get_current_username(progname)); /* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--single") == 0)
 		PostgresMain(argc, argv,
 					 NULL,		/* no dbname */

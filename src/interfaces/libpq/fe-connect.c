@@ -17,6 +17,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
@@ -300,6 +301,14 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
 
+	{"standalone_datadir", NULL, NULL, NULL,
+	"Standalone-Data-Directory", "D", 64,
+	offsetof(struct pg_conn, standalone_datadir)},
+
+	{"standalone_backend", NULL, NULL, NULL,
+	"Standalone-Backend", "D", 64,
+	offsetof(struct pg_conn, standalone_backend)},
+
 	/* Terminating entry --- MUST BE LAST */
 	{NULL, NULL, NULL, NULL,
 	NULL, NULL, 0}
@@ -401,6 +410,27 @@ pqDropConnection(PGconn *conn)
 	if (conn->sock >= 0)
 		closesocket(conn->sock);
 	conn->sock = -1;
+	/* If we forked a child postgres process, wait for it to exit */
+	if (conn->postgres_pid > 0)
+	{
+#ifdef WIN32
+		while (WaitForSingleObject(conn->proc_handle, INFINITE) != WAIT_OBJECT_0)
+		{
+			_dosmaperr(GetLastError());
+			/* If interrupted by signal, keep waiting */
+			if (errno != EINTR)
+				break;
+		}
+#else
+		while (waitpid(conn->postgres_pid, NULL, 0) < 0)
+		{
+			/* If interrupted by signal, keep waiting */
+			if (errno != EINTR)
+				break;
+		}
+#endif
+	}
+	conn->postgres_pid = -1;
 	/* Discard any unread/unsent data */
 	conn->inStart = conn->inCursor = conn->inEnd = 0;
 	conn->outCount = 0;
@@ -1299,6 +1329,340 @@ setKeepalivesWin32(PGconn *conn)
 #endif   /* SIO_KEEPALIVE_VALS */
 #endif   /* WIN32 */
 
+#ifdef WIN32
+int
+pgsockpair(int handles[2], PGconn *conn)
+{
+	SOCKET		s;
+	struct sockaddr_in serv_addr;
+	int			len = sizeof(serv_addr);
+
+	handles[0] = handles[1] = INVALID_SOCKET;
+
+	if ((s = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+				   libpq_gettext("pgsockpair could not create socket: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+		return -1;
+	}
+
+	memset((void *) &serv_addr, 0, sizeof(serv_addr));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_port = htons(0);
+	serv_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (bind(s, (SOCKADDR *) & serv_addr, len) == SOCKET_ERROR)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("pgsockpair could not bind: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+		closesocket(s);
+		return -1;
+	}
+	if (listen(s, 1) == SOCKET_ERROR)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("pgsockpair could not listen: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		closesocket(s);
+		return -1;
+	}
+	if (getsockname(s, (SOCKADDR *) & serv_addr, &len) == SOCKET_ERROR)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+					 libpq_gettext("pgsockpair could not getsockname: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		closesocket(s);
+		return -1;
+	}
+	if ((handles[1] = socket(PF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+				 libpq_gettext("pgsockpair could not create socket 2: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+		closesocket(s);
+		return -1;
+	}
+
+	if (connect(handles[1], (SOCKADDR *) & serv_addr, len) == SOCKET_ERROR)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+				  libpq_gettext("pgsockpair could not connect socket: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		closesocket(s);
+		return -1;
+	}
+	if ((handles[0] = accept(s, (SOCKADDR *) & serv_addr, &len)) == INVALID_SOCKET)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+				   libpq_gettext("pgsockpair could not accept socket: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		closesocket(handles[1]);
+		handles[1] = INVALID_SOCKET;
+		closesocket(s);
+		return -1;
+	}
+	closesocket(s);
+	return 0;
+}
+
+/*
+ * Fork and exec a command, connecting up a pair of anonymous sockets for
+ * communication.  argv[fdarg] is modified by appending the child-side
+ * socket's file descriptor number.  The parent-side socket's FD is returned
+ * in *psock, and the function result is the child's PID.
+ */
+static pid_t
+fork_backend_child(char **argv, int fdarg, PGconn *conn)
+{
+	int			socks[2];
+	char		newfdarg[32];
+	STARTUPINFO si;
+	PROCESS_INFORMATION pi;
+	int			i;
+	int			j;
+	char		cmdLine[MAXPGPATH * 2];
+	typedef struct
+	{
+		SOCKET		origsocket; /* Original socket value, or PGINVALID_SOCKET
+								 * if not a socket */
+		WSAPROTOCOL_INFO wsainfo;
+	} InheritableSocket;
+	InheritableSocket *param;
+	HANDLE		paramHandle;
+	SECURITY_ATTRIBUTES sa;
+	char		paramHandleStr[32];
+
+
+	if (pgsockpair(socks, conn) < 0)
+		return -1;
+
+	/* Set up shared memory for parameter passing */
+	ZeroMemory(&sa, sizeof(sa));
+	sa.nLength = sizeof(sa);
+	sa.bInheritHandle = TRUE;
+	paramHandle = CreateFileMapping(INVALID_HANDLE_VALUE,
+									&sa,
+									PAGE_READWRITE,
+									0,
+									sizeof(InheritableSocket),
+									NULL);
+	if (paramHandle == INVALID_HANDLE_VALUE)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("could not create standalone backend parameter file mapping: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		return -1;
+	}
+
+	param = MapViewOfFile(paramHandle, FILE_MAP_WRITE, 0, 0, sizeof(InheritableSocket));
+	if (!param)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+			   libpq_gettext("could not map backend parameter memory: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+		CloseHandle(paramHandle);
+		return -1;
+	}
+
+	/* Insert temp file name instead of sockid incase of windows */
+#ifdef _WIN64
+	sprintf(paramHandleStr, "%llu", (LONG_PTR) paramHandle);
+#else
+	sprintf(paramHandleStr, "%lu", (DWORD) paramHandle);
+#endif
+
+	snprintf(newfdarg, sizeof(newfdarg), "%s%s", argv[fdarg], paramHandleStr);
+	argv[fdarg] = newfdarg;
+
+	/* Format the cmd line */
+	cmdLine[sizeof(cmdLine) - 1] = '\0';
+	cmdLine[sizeof(cmdLine) - 2] = '\0';
+	snprintf(cmdLine, sizeof(cmdLine) - 1, "\"%s\"", argv[0]);
+
+	i = 0;
+	while (argv[++i] != NULL)
+	{
+		j = strlen(cmdLine);
+		snprintf(cmdLine + j, sizeof(cmdLine) - 1 - j, " \"%s\"", argv[i]);
+	}
+	if (cmdLine[sizeof(cmdLine) - 2] != '\0')
+	{
+		appendPQExpBuffer(&conn->errorMessage,
+					libpq_gettext("subprocess command line too long: %s\n"));
+
+		return -1;
+	}
+
+	memset(&pi, 0, sizeof(pi));
+	memset(&si, 0, sizeof(si));
+	si.cb = sizeof(si);
+
+	if (!CreateProcess(NULL, cmdLine, NULL, NULL, TRUE, CREATE_SUSPENDED,
+					   NULL, NULL, &si, &pi))
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("CreateProcess call failed: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+		return -1;
+	}
+
+
+	param->origsocket = socks[0];
+	if (socks[0] != 0 && socks[0] != PGINVALID_SOCKET)
+	{
+		/* Actual socket */
+		if (WSADuplicateSocket(socks[0], pi.dwProcessId, &param->wsainfo) != 0)
+		{
+			char		sebuf[256];
+
+			if (!TerminateProcess(pi.hProcess, 255))
+			{
+				appendPQExpBuffer(&conn->errorMessage,
+				libpq_gettext("could not terminate unstarted process: %s\n"),
+							SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+				CloseHandle(pi.hProcess);
+				CloseHandle(pi.hThread);
+				return -1;
+			}
+
+			appendPQExpBuffer(&conn->errorMessage,
+					   libpq_gettext("could not duplicate the socket: %s\n"),
+							SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+			CloseHandle(pi.hProcess);
+			CloseHandle(pi.hThread);
+			return -1;
+		}
+	}
+
+	/*
+	 * Drop the parameter shared memory that is now inherited to the
+	 * standalone chile
+	 */
+	if (!UnmapViewOfFile(param))
+	{
+		char		sebuf[256];
+
+		fprintf(stderr,
+				libpq_gettext("WARNING: could not unmap view of standalone child variables: %s\n"),
+				SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+	}
+
+	if (!CloseHandle(paramHandle))
+	{
+		char		sebuf[256];
+
+		fprintf(stderr,
+				libpq_gettext("WARNING: could not close handle of standalone child variables: %s\n"),
+				SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+	}
+
+	/*
+	 * Now that the socket information is shared, we start the child thread
+	 */
+	if (ResumeThread(pi.hThread) == -1)
+	{
+		char		sebuf[256];
+
+		if (!TerminateProcess(pi.hProcess, 255))
+		{
+			appendPQExpBuffer(&conn->errorMessage,
+				libpq_gettext("could not terminate unstarted process: %s\n"),
+							SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+
+			CloseHandle(pi.hProcess);
+			CloseHandle(pi.hThread);
+			return -1;
+		}
+		appendPQExpBuffer(&conn->errorMessage,
+		 libpq_gettext("could not resume thread of unstarted process: %s\n"),
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
+		return -1;
+	}
+	/* Don't close pi.hProcess here - the wait thread needs access to it */
+	CloseHandle(pi.hThread);
+
+	conn->sock = socks[1];
+	conn->proc_handle = pi.hProcess;
+	return pi.dwProcessId;
+}
+#else
+
+/*
+ * Fork and exec a command, connecting up a pair of anonymous sockets for
+ * communication.  argv[fdarg] is modified by appending the child-side
+ * socket's file descriptor number.  The parent-side socket's FD is returned
+ * in *psock, and the function result is the child's PID.
+ */
+static pid_t
+fork_backend_child(char **argv, int fdarg, int *psock)
+{
+	pid_t		pid;
+	int			socks[2];
+	char		newfdarg[32];
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, socks) < 0)
+		return -1;
+
+	pid = fork();
+
+	if (pid < 0)
+	{
+		/* fork failed */
+		close(socks[0]);
+		close(socks[1]);
+		return pid;
+	}
+	else if (pid == 0)
+	{
+		/* successful, in child process */
+		close(socks[1]);
+		snprintf(newfdarg, sizeof(newfdarg), "%s%d", argv[fdarg], socks[0]);
+		argv[fdarg] = newfdarg;
+		execv(argv[0], argv);
+		perror(argv[0]);
+		exit(1);
+	}
+	else
+	{
+		/* successful, in parent process */
+		close(socks[0]);
+		*psock = socks[1];
+	}
+
+	return pid;
+}
+#endif
+
 /* ----------
  * connectDBStart -
  *		Begin the process of making a connection to the backend.
@@ -1325,6 +1689,61 @@ connectDBStart(PGconn *conn)
 	/* Ensure our buffers are empty */
 	conn->inStart = conn->inCursor = conn->inEnd = 0;
 	conn->outCount = 0;
+
+	/*
+	 * If the standalone_datadir option was specified, ignore any host or
+	 * port specifications and just try to fork a standalone backend.
+	 */
+	if (conn->standalone_datadir && conn->standalone_datadir[0])
+	{
+		char   *be_argv[10];
+
+		/*
+		 * We set up the backend's command line in execv(3) style, so that
+		 * we don't need to cope with shell quoting rules.
+		 */
+		if (conn->standalone_backend && conn->standalone_backend[0])
+			be_argv[0] = conn->standalone_backend;
+		else					/* assume we should use hard-wired path */
+			be_argv[0] = PGBINDIR "/postgres";
+
+		be_argv[1] = "--child=";
+		be_argv[2] = "-D";
+		be_argv[3] = conn->standalone_datadir;
+		be_argv[4] = (conn->dbName && conn->dbName[0]) ? conn->dbName : NULL;
+		be_argv[5] = NULL;
+
+#ifdef WIN32
+		conn->postgres_pid = fork_backend_child(be_argv, 1, conn);
+		if (conn->postgres_pid < 0)
+			goto connect_errReturn;
+#else
+		conn->postgres_pid = fork_backend_child(be_argv, 1, &conn->sock);
+		if (conn->postgres_pid < 0)
+		{
+			char		sebuf[256];
+
+			appendPQExpBuffer(&conn->errorMessage,
+					libpq_gettext("could not fork standalone backend: %s\n"),
+							  pqStrerror(errno, sebuf, sizeof(sebuf)));
+			goto connect_errReturn;
+		}
+#endif
+
+		/*
+		 * Go directly to CONNECTION_AUTH_OK state, since the standalone
+		 * backend is not going to issue any authentication challenge to us.
+		 * We're just waiting for startup to conclude.
+		 */
+#ifdef USE_SSL
+		conn->allow_ssl_try = false;
+#endif
+		conn->pversion = PG_PROTOCOL(3, 0);
+		conn->status = CONNECTION_AUTH_OK;
+		conn->asyncStatus = PGASYNC_BUSY;
+
+		return 1;
+	}
 
 	/*
 	 * Determine the parameters to pass to pg_getaddrinfo_all.
@@ -2706,6 +3125,7 @@ makeEmptyPGconn(void)
 	conn->auth_req_received = false;
 	conn->password_needed = false;
 	conn->dot_pgpass_used = false;
+	conn->postgres_pid = -1;
 #ifdef USE_SSL
 	conn->allow_ssl_try = true;
 	conn->wait_ssl_try = false;
@@ -2782,6 +3202,10 @@ freePGconn(PGconn *conn)
 		free(conn->pgport);
 	if (conn->pgunixsocket)
 		free(conn->pgunixsocket);
+	if (conn->standalone_datadir)
+		free(conn->standalone_datadir);
+	if (conn->standalone_backend)
+		free(conn->standalone_backend);
 	if (conn->pgtty)
 		free(conn->pgtty);
 	if (conn->connect_timeout)

@@ -306,6 +306,8 @@ struct pg_conn
 	char	   *pgunixsocket;	/* the Unix-domain socket that the server is
 								 * listening on; if NULL, uses a default
 								 * constructed from pgport */
+	char	   *standalone_datadir;	/* data directory for standalone backend */
+	char	   *standalone_backend;	/* executable for standalone backend */
 	char	   *pgtty;			/* tty on which the backend messages is
 								 * displayed (OBSOLETE, NOT USED) */
 	char	   *connect_timeout;	/* connection timeout (numeric string) */
@@ -376,6 +378,9 @@ struct pg_conn
 	bool		sigpipe_so;		/* have we masked SIGPIPE via SO_NOSIGPIPE? */
 	bool		sigpipe_flag;	/* can we mask SIGPIPE via MSG_NOSIGNAL? */
 
+	/* If we forked a child postgres process, its PID is kept here */
+	pid_t		postgres_pid;	/* PID, or -1 if none */
+
 	/* Transient state needed while establishing connection */
 	struct addrinfo *addrlist;	/* list of possible backend addresses */
 	struct addrinfo *addr_cur;	/* the one currently being tried */
@@ -418,6 +423,10 @@ struct pg_conn
 	/* Status for asynchronous result construction */
 	PGresult   *result;			/* result being constructed */
 	PGresult   *next_result;	/* next result (used in single-row mode) */
+#ifdef WIN32
+	/* If we forked a child postgres process, process handle */
+	HANDLE      proc_handle;
+#endif
 
 	/* Assorted state for SSL, GSS, etc */
 

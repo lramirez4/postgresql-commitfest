@@ -3271,8 +3271,10 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 	{
 		gucsource = PGC_S_ARGV; /* switches came from command line */
 
-		/* Ignore the initial --single argument, if present */
-		if (argc > 1 && strcmp(argv[1], "--single") == 0)
+		/* Ignore the initial --single or --child argument, if present */
+		if (argc > 1 &&
+			(strcmp(argv[1], "--single") == 0 ||
+			 strncmp(argv[1], "--child=", 8) == 0))
 		{
 			argv++;
 			argc--;
@@ -3536,18 +3538,18 @@ PostgresMain(int argc, char *argv[],
 	 * standalone).
 	 */
 	if (!IsUnderPostmaster)
-	{
 		MyProcPid = getpid();
 
+	if (MyProcPort == NULL)
 		MyStartTime = time(NULL);
-	}
 
 	/*
 	 * Fire up essential subsystems: error and memory management
 	 *
-	 * If we are running under the postmaster, this is done already.
+	 * If we are running under the postmaster, this is done already; likewise
+	 * in child-postgres mode.
 	 */
-	if (!IsUnderPostmaster)
+	if (MyProcPort == NULL)
 		MemoryContextInit();
 
 	SetProcessingMode(InitProcessing);

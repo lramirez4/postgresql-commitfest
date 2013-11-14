@@ -47,6 +47,9 @@ extern int	postmaster_alive_fds[2];
 extern const char *progname;
 
 extern void PostmasterMain(int argc, char *argv[]) __attribute__((noreturn));
+
+extern void ChildPostgresMain(int argc, char *argv[], const char *username) __attribute__((noreturn));
+
 extern void ClosePostmasterPorts(bool am_syslogger);
 
 extern int	MaxLivePostmasterChildren(void);

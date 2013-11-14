@@ -501,6 +501,7 @@ typedef struct
 
 static void read_backend_variables(char *id, Port *port);
 static void restore_backend_variables(BackendParameters *param, Port *port);
+static void read_standalone_child_variables(char *id, pgsocket *psock);
 
 #ifndef WIN32
 static bool save_backend_variables(BackendParameters *param, Port *port);
@@ -4710,6 +4711,97 @@ ExitPostmaster(int status)
 	proc_exit(status);
 }
 
+
+/*
+ * ChildPostgresMain - start a new-style standalone postgres process
+ *
+ * This may not belong here, but it does share a lot of code with ConnCreate
+ * and BackendInitialize.  Basically what it has to do is set up a
+ * MyProcPort structure and then hand off control to PostgresMain.
+ * Beware that not very much stuff is initialized yet.
+ *
+ * In the future it might be interesting to support a "standalone
+ * multiprocess" mode in which we have a postmaster process that doesn't
+ * listen for connections, but does supervise autovacuum, bgwriter, etc
+ * auxiliary processes.  So that's another reason why postmaster.c might be
+ * the right place for this.
+ */
+void
+ChildPostgresMain(int argc, char *argv[], const char *username)
+{
+	Port	   *port;
+#ifdef WIN32
+	char        paramHandleStr[32];
+#endif
+
+	/*
+	 * Fire up essential subsystems: error and memory management
+	 */
+	MemoryContextInit();
+
+	/*
+	 * Build a Port structure for the client connection
+	 */
+	if (!(port = (Port *) calloc(1, sizeof(Port))))
+		ereport(FATAL,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	/*
+	 * GSSAPI specific state struct must exist even though we won't use it
+	 */
+#if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
+	port->gss = (pg_gssinfo *) calloc(1, sizeof(pg_gssinfo));
+	if (!port->gss)
+		ereport(FATAL,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+#endif
+
+#ifndef WIN32
+	/* The file descriptor of the client socket is the argument of --child */
+	if (sscanf(argv[1], "--child=%d", &port->sock) != 1)
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid argument for --child: \"%s\"", argv[1])));
+#else
+/* The file descriptor of the client socket is the argument of --child */
+	if (sscanf(argv[1], "--child=%s", paramHandleStr) != 1)
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid argument for --child: \"%s\"", argv[1])));
+
+	read_standalone_child_variables(paramHandleStr, &port->sock);
+
+#endif
+
+	/* Default assumption about protocol to use */
+	FrontendProtocol = port->proto = PG_PROTOCOL_LATEST;
+
+	/* save process start time */
+	port->SessionStartTime = GetCurrentTimestamp();
+	MyStartTime = timestamptz_to_time_t(port->SessionStartTime);
+
+	/* set these to empty in case they are needed */
+	port->remote_host = "";
+	port->remote_port = "";
+
+	MyProcPort = port;
+
+	/*
+	 * We can now initialize libpq and then enable reporting of ereport errors
+	 * to the client.
+	 */
+	pq_init();					/* initialize libpq to talk to client */
+	whereToSendOutput = DestRemote;	/* now safe to ereport to client */
+
+	/* And pass off control to PostgresMain */
+	PostgresMain(argc, argv, NULL, username);
+
+	abort();					/* not reached */
+}
+
+
 /*
  * sigusr1_handler - handle signal conditions from child processes
  */
@@ -5891,6 +5983,47 @@ restore_backend_variables(BackendParameters *param, Port *port)
 }
 
 
+#ifdef WIN32
+static void
+read_standalone_child_variables(char *id, pgsocket *psock)
+{
+	HANDLE		paramHandle;
+	InheritableSocket param;
+	InheritableSocket *paramp;
+
+/* Win32 version uses mapped file */
+#ifdef _WIN64
+	paramHandle = (HANDLE) _atoi64(id);
+#else
+	paramHandle = (HANDLE) atol(id);
+#endif
+	paramp = MapViewOfFile(paramHandle, FILE_MAP_READ, 0, 0, 0);
+	if (!paramp)
+	{
+		write_stderr("could not map view of standalone child variables: error code %lu\n",
+					 GetLastError());
+		exit(1);
+	}
+
+	memcpy(&param, paramp, sizeof(InheritableSocket));
+
+	if (!UnmapViewOfFile(paramp))
+	{
+		write_stderr("could not unmap view of standalone child variables: error code %lu\n",
+					 GetLastError());
+		exit(1);
+	}
+
+	if (!CloseHandle(paramHandle))
+	{
+		write_stderr("could not close handle to standalone child parameter variables: error code %lu\n",
+					 GetLastError());
+		exit(1);
+	}
+
+	read_inheritable_socket(psock, &param);
+}
+#endif
 Size
 ShmemBackendArraySize(void)
 {
