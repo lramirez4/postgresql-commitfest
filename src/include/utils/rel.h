@@ -104,6 +104,7 @@ typedef struct RelationData
 	List	   *rd_indexlist;	/* list of OIDs of indexes on relation */
 	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
+	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Oid			rd_oidindex;	/* OID of unique index on OID, if any */
 	LockInfoData rd_lockInfo;	/* lock mgr's info for locking relation */
 	RuleLock   *rd_rules;		/* rewrite rules */
@@ -453,6 +454,26 @@ typedef struct StdRdOptions
  */
 #define RelationIsPopulated(relation) ((relation)->rd_rel->relispopulated)
 
+/*
+ * RelationIsAccessibleInLogicalDecoding
+ *		True if we need to log enough information to have access via
+ *		decoding snapshot.
+ */
+#define RelationIsAccessibleInLogicalDecoding(relation) \
+	(wal_level >= WAL_LEVEL_LOGICAL && \
+	 RelationIsAccessibleInLogicalDecodingInternal(relation))
+
+/*
+ * RelationIsLogicallyLogged
+ *		True if we need to log enough information to decode the data
+ *		from the WAL stream.
+ */
+#define RelationIsLogicallyLogged(relation) \
+	(wal_level >= WAL_LEVEL_LOGICAL && \
+	 RelationIsLogicallyLoggedInternal(relation))
+
+extern bool RelationIsAccessibleInLogicalDecodingInternal(Relation relation);
+extern bool RelationIsLogicallyLoggedInternal(Relation relation);
 
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);

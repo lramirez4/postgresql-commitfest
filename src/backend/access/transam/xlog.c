@@ -1191,6 +1191,8 @@ begin:;
 	 */
 	WALInsertSlotRelease();
 
+	MarkCurrentTransactionIdLoggedIfAny();
+
 	END_CRIT_SECTION();
 
 	/*

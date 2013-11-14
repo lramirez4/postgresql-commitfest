@@ -3832,17 +3832,28 @@ RelationGetIndexPredicate(Relation relation)
  * be bms_free'd when not needed anymore.
  */
 Bitmapset *
-RelationGetIndexAttrBitmap(Relation relation, bool keyAttrs)
+RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 {
 	Bitmapset  *indexattrs;
-	Bitmapset  *uindexattrs;
+	Bitmapset  *uindexattrs; /* unique keys */
+	Bitmapset  *idindexattrs; /* replica identity index */
 	List	   *indexoidlist;
 	ListCell   *l;
 	MemoryContext oldcxt;
 
 	/* Quick exit if we already computed the result. */
 	if (relation->rd_indexattr != NULL)
-		return bms_copy(keyAttrs ? relation->rd_keyattr : relation->rd_indexattr);
+		switch(attrKind)
+		{
+			case INDEX_ATTR_BITMAP_IDENTITY_KEY:
+				return bms_copy(relation->rd_idattr);
+			case INDEX_ATTR_BITMAP_KEY:
+				return bms_copy(relation->rd_keyattr);
+			case INDEX_ATTR_BITMAP_ALL:
+				return bms_copy(relation->rd_indexattr);
+			default:
+				elog(ERROR, "unknown attrKind %u", attrKind);
+		}
 
 	/* Fast path if definitely no indexes */
 	if (!RelationGetForm(relation)->relhasindex)
@@ -3869,13 +3880,16 @@ RelationGetIndexAttrBitmap(Relation relation, bool keyAttrs)
 	 */
 	indexattrs = NULL;
 	uindexattrs = NULL;
+	idindexattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
 		Relation	indexDesc;
 		IndexInfo  *indexInfo;
 		int			i;
-		bool		isKey;
+		bool		isIDKey;/* replica identity index */
+		bool		isKey;/* key member */
+
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -3887,6 +3901,8 @@ RelationGetIndexAttrBitmap(Relation relation, bool keyAttrs)
 			indexInfo->ii_Expressions == NIL &&
 			indexInfo->ii_Predicate == NIL;
 
+		isIDKey = indexOid == relation->rd_replidindex;
+
 		/* Collect simple attribute references */
 		for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
 		{
@@ -3896,6 +3912,11 @@ RelationGetIndexAttrBitmap(Relation relation, bool keyAttrs)
 			{
 				indexattrs = bms_add_member(indexattrs,
 							   attrnum - FirstLowInvalidHeapAttributeNumber);
+
+				if (isIDKey)
+					idindexattrs = bms_add_member(idindexattrs,
+												 attrnum - FirstLowInvalidHeapAttributeNumber);
+
 				if (isKey)
 					uindexattrs = bms_add_member(uindexattrs,
 							   attrnum - FirstLowInvalidHeapAttributeNumber);
@@ -3917,10 +3938,21 @@ RelationGetIndexAttrBitmap(Relation relation, bool keyAttrs)
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 	relation->rd_indexattr = bms_copy(indexattrs);
 	relation->rd_keyattr = bms_copy(uindexattrs);
+	relation->rd_idattr = bms_copy(idindexattrs);
 	MemoryContextSwitchTo(oldcxt);
 
 	/* We return our original working copy for caller to play with */
-	return keyAttrs ? uindexattrs : indexattrs;
+	switch(attrKind)
+	{
+		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
+			return idindexattrs;
+		case INDEX_ATTR_BITMAP_KEY:
+			return uindexattrs;
+		case INDEX_ATTR_BITMAP_ALL:
+			return indexattrs;
+		default:
+			elog(ERROR, "unknown attrKind %u", attrKind);
+	}
 }
 
 /*
@@ -4894,4 +4926,41 @@ unlink_initfile(const char *initfilename)
 		if (errno != ENOENT)
 			elog(LOG, "could not remove cache file \"%s\": %m", initfilename);
 	}
+}
+
+/* check RelationIsAccessibleInLogicalDecoding's comment */
+bool
+RelationIsAccessibleInLogicalDecodingInternal(Relation relation)
+{
+	Assert(XLogLogicalInfoActive());
+
+	if (!RelationNeedsWAL(relation))
+		return false;
+
+	/*
+	 * We need access to all system tables from decoding snapshots.
+	 */
+	if (IsCatalogRelation(relation))
+		return true;
+
+	return false;
+}
+
+/* check RelationIsLogicallyLogged's comment */
+bool
+RelationIsLogicallyLoggedInternal(Relation relation)
+{
+	Assert(XLogLogicalInfoActive());
+
+	/* no need to log anything for unlogged tables and similar things */
+	if (!RelationNeedsWAL(relation))
+		return false;
+
+	/*
+	 * For now we don't decode changes to system tables, so don't log them.
+	 */
+	if (IsCatalogRelation(relation))
+		return false;
+
+	return true;
 }
