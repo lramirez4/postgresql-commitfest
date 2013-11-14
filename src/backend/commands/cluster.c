@@ -859,6 +859,8 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 	 */
 	vacuum_set_xid_limits(freeze_min_age, freeze_table_age,
 						  OldHeap->rd_rel->relisshared,
+						  IsSystemRelation(OldHeap)
+						  || RelationIsAccessibleInLogicalDecoding(OldHeap),
 						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff);
 
 	/*

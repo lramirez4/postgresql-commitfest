@@ -381,6 +381,7 @@ void
 vacuum_set_xid_limits(int freeze_min_age,
 					  int freeze_table_age,
 					  bool sharedRel,
+					  bool catalogRel,
 					  TransactionId *oldestXmin,
 					  TransactionId *freezeLimit,
 					  TransactionId *freezeTableLimit,
@@ -399,7 +400,7 @@ vacuum_set_xid_limits(int freeze_min_age,
 	 * working on a particular table at any time, and that each vacuum is
 	 * always an independent transaction.
 	 */
-	*oldestXmin = GetOldestXmin(sharedRel, true, false);
+	*oldestXmin = GetOldestXmin(sharedRel, true, catalogRel, false);
 
 	Assert(TransactionIdIsNormal(*oldestXmin));
 
@@ -720,7 +721,7 @@ vac_update_datfrozenxid(void)
 	 * committed pg_class entries for new tables; see AddNewRelationTuple().
 	 * So we cannot produce a wrong minimum by starting with this.
 	 */
-	newFrozenXid = GetOldestXmin(true, true, false);
+	newFrozenXid = GetOldestXmin(true, true, true, false);
 
 	/*
 	 * Similarly, initialize the MultiXact "min" with the value that would be
