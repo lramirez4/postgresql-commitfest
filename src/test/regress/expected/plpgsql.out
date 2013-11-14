@@ -5218,3 +5218,42 @@ NOTICE:  outer_func() done
 drop function outer_outer_func(int);
 drop function outer_func(int);
 drop function inner_func(int);
+-- test of conditional raise statement
+create or replace function raise_test1(int)
+returns void as $$
+begin
+  raise notice 'hello' when $1 > 10;
+  raise notice '% % %', 1, $1, 'hello' when $1 > 10;
+  raise notice 'hello, %', upper('world') using detail='bla bla bla' when $1 > 10;
+end;
+$$ language plpgsql;
+ERROR:  cannot change return type of existing function
+HINT:  Use DROP FUNCTION raise_test1(integer) first.
+select raise_test1(0);
+ERROR:  too many parameters specified for RAISE
+CONTEXT:  PL/pgSQL function raise_test1(integer) line 3 at RAISE
+select raise_test1(20);
+ERROR:  too many parameters specified for RAISE
+CONTEXT:  PL/pgSQL function raise_test1(integer) line 3 at RAISE
+drop function raise_test1(int);
+create table plpgsql_target_table(a int);
+insert into plpgsql_target_table values(10);
+create or replace function raise_test2(int)
+returns int as $$
+declare _a int;
+begin
+  select into _a a from plpgsql_target_table where a = $1;
+  raise exception 'there are no row where a = %', $1 when not found;
+  return _a;
+end;
+$$ language plpgsql;
+select raise_test2(1);
+ERROR:  there are no row where a = 1
+select raise_test2(10);
+ raise_test2 
+-------------
+          10
+(1 row)
+
+drop function raise_test2(int);
+drop table plpgsql_target_table;

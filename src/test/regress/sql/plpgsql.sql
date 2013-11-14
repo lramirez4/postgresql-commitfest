@@ -4104,3 +4104,37 @@ select outer_outer_func(20);
 drop function outer_outer_func(int);
 drop function outer_func(int);
 drop function inner_func(int);
+
+-- test of conditional raise statement
+create or replace function raise_test1(int)
+returns void as $$
+begin
+  raise notice 'hello' when $1 > 10;
+  raise notice '% % %', 1, $1, 'hello' when $1 > 10;
+  raise notice 'hello, %', upper('world') using detail='bla bla bla' when $1 > 10;
+end;
+$$ language plpgsql;
+
+select raise_test1(0);
+select raise_test1(20);
+
+drop function raise_test1(int);
+
+create table plpgsql_target_table(a int);
+insert into plpgsql_target_table values(10);
+
+create or replace function raise_test2(int)
+returns int as $$
+declare _a int;
+begin
+  select into _a a from plpgsql_target_table where a = $1;
+  raise exception 'there are no row where a = %', $1 when not found;
+  return _a;
+end;
+$$ language plpgsql;
+
+select raise_test2(1);
+select raise_test2(10);
+
+drop function raise_test2(int);
+drop table plpgsql_target_table;

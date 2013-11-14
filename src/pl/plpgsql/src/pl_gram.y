@@ -63,6 +63,7 @@ static	void			current_token_is_not_variable(int tok);
 static	PLpgSQL_expr	*read_sql_construct(int until,
 											int until2,
 											int until3,
+											int until4,
 											const char *expected,
 											const char *sqlstart,
 											bool isexpression,
@@ -105,7 +106,7 @@ static	void			 check_labels(const char *start_label,
 									  int end_location);
 static	PLpgSQL_expr	*read_cursor_args(PLpgSQL_var *cursor,
 										  int until, const char *expected);
-static	List			*read_raise_options(void);
+static	List			*read_raise_options(int *tok);
 
 %}
 
@@ -1386,6 +1387,7 @@ for_control		: for_variable K_IN
 							expr1 = read_sql_construct(DOT_DOT,
 													   K_LOOP,
 													   0,
+													   0,
 													   "LOOP",
 													   "SELECT ",
 													   true,
@@ -1690,6 +1692,7 @@ stmt_raise		: K_RAISE
 						new->message	= NULL;
 						new->params		= NIL;
 						new->options	= NIL;
+						new->cond = NULL;
 
 						tok = yylex();
 						if (tok == 0)
@@ -1760,22 +1763,22 @@ stmt_raise		: K_RAISE
 								 * or USING to begin the options list.
 								 */
 								tok = yylex();
-								if (tok != ',' && tok != ';' && tok != K_USING)
+								if (tok != ',' && tok != ';' && tok != K_USING && tok != K_WHEN)
 									yyerror("syntax error");
 
 								while (tok == ',')
 								{
 									PLpgSQL_expr *expr;
 
-									expr = read_sql_construct(',', ';', K_USING,
-															  ", or ; or USING",
+									expr = read_sql_construct(',', ';', K_USING, K_WHEN,
+															  ", or ; or USING or WHEN",
 															  "SELECT ",
 															  true, true, true,
 															  NULL, &tok);
 									new->params = lappend(new->params, expr);
 								}
 							}
-							else if (tok != K_USING)
+							else if (tok != K_USING && tok != K_WHEN)
 							{
 								/* must be condition name or SQLSTATE */
 								if (tok_is_keyword(tok, &yylval,
@@ -1806,12 +1809,15 @@ stmt_raise		: K_RAISE
 																	false);
 								}
 								tok = yylex();
-								if (tok != ';' && tok != K_USING)
+								if (tok != ';' && tok != K_USING && tok != K_WHEN)
 									yyerror("syntax error");
 							}
 
 							if (tok == K_USING)
-								new->options = read_raise_options();
+								new->options = read_raise_options(&tok);
+
+							if (tok == K_WHEN)
+								new->cond = read_sql_expression(';', ";");
 						}
 
 						$$ = (PLpgSQL_stmt *)new;
@@ -1868,7 +1874,7 @@ stmt_dynexecute : K_EXECUTE
 						PLpgSQL_expr *expr;
 						int endtoken;
 
-						expr = read_sql_construct(K_INTO, K_USING, ';',
+						expr = read_sql_construct(K_INTO, K_USING, ';', 0,
 												  "INTO or USING or ;",
 												  "SELECT ",
 												  true, true, true,
@@ -1907,7 +1913,7 @@ stmt_dynexecute : K_EXECUTE
 									yyerror("syntax error");
 								do
 								{
-									expr = read_sql_construct(',', ';', K_INTO,
+									expr = read_sql_construct(',', ';', K_INTO, 0,
 															  ", or ; or INTO",
 															  "SELECT ",
 															  true, true, true,
@@ -2418,7 +2424,7 @@ current_token_is_not_variable(int tok)
 static PLpgSQL_expr *
 read_sql_expression(int until, const char *expected)
 {
-	return read_sql_construct(until, 0, 0, expected,
+	return read_sql_construct(until, 0, 0, 0, expected,
 							  "SELECT ", true, true, true, NULL, NULL);
 }
 
@@ -2427,7 +2433,7 @@ static PLpgSQL_expr *
 read_sql_expression2(int until, int until2, const char *expected,
 					 int *endtoken)
 {
-	return read_sql_construct(until, until2, 0, expected,
+	return read_sql_construct(until, until2, 0, 0, expected,
 							  "SELECT ", true, true, true, NULL, endtoken);
 }
 
@@ -2435,7 +2441,7 @@ read_sql_expression2(int until, int until2, const char *expected,
 static PLpgSQL_expr *
 read_sql_stmt(const char *sqlstart)
 {
-	return read_sql_construct(';', 0, 0, ";",
+	return read_sql_construct(';', 0, 0, 0, ";",
 							  sqlstart, false, true, true, NULL, NULL);
 }
 
@@ -2458,6 +2464,7 @@ static PLpgSQL_expr *
 read_sql_construct(int until,
 				   int until2,
 				   int until3,
+				   int until4,
 				   const char *expected,
 				   const char *sqlstart,
 				   bool isexpression,
@@ -2490,6 +2497,8 @@ read_sql_construct(int until,
 		if (tok == until2 && parenlevel == 0)
 			break;
 		if (tok == until3 && parenlevel == 0)
+			break;
+		if (tok == until4 && parenlevel == 0)
 			break;
 		if (tok == '(' || tok == '[')
 			parenlevel++;
@@ -3609,7 +3618,7 @@ read_cursor_args(PLpgSQL_var *cursor, int until, const char *expected)
 		 * translated into a form where the second parameter is commented
 		 * out.
 		 */
-		item = read_sql_construct(',', ')', 0,
+		item = read_sql_construct(',', ')', 0, 0,
 								  ",\" or \")",
 								  sqlstart,
 								  true, true,
@@ -3673,59 +3682,59 @@ read_cursor_args(PLpgSQL_var *cursor, int until, const char *expected)
  * Parse RAISE ... USING options
  */
 static List *
-read_raise_options(void)
+read_raise_options(int *tok)
 {
 	List	   *result = NIL;
 
 	for (;;)
 	{
 		PLpgSQL_raise_option *opt;
-		int		tok;
 
-		if ((tok = yylex()) == 0)
+		if ((*tok = yylex()) == 0)
 			yyerror("unexpected end of function definition");
 
 		opt = (PLpgSQL_raise_option *) palloc(sizeof(PLpgSQL_raise_option));
 
-		if (tok_is_keyword(tok, &yylval,
+		if (tok_is_keyword(*tok, &yylval,
 						   K_ERRCODE, "errcode"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_ERRCODE;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_MESSAGE, "message"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_MESSAGE;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_DETAIL, "detail"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_DETAIL;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_HINT, "hint"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_HINT;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_COLUMN, "column"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_COLUMN;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_CONSTRAINT, "constraint"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_CONSTRAINT;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_DATATYPE, "datatype"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_DATATYPE;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_TABLE, "table"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_TABLE;
-		else if (tok_is_keyword(tok, &yylval,
+		else if (tok_is_keyword(*tok, &yylval,
 								K_SCHEMA, "schema"))
 			opt->opt_type = PLPGSQL_RAISEOPTION_SCHEMA;
 		else
 			yyerror("unrecognized RAISE statement option");
 
-		tok = yylex();
-		if (tok != '=' && tok != COLON_EQUALS)
+		*tok = yylex();
+		if (*tok != '=' && *tok != COLON_EQUALS)
 			yyerror("syntax error, expected \"=\"");
 
-		opt->expr = read_sql_expression2(',', ';', ", or ;", &tok);
+		opt->expr = read_sql_construct(',', ';', K_WHEN, 0, ", or ; or WHEN",
+							  "SELECT ", true, true, true, NULL, tok);
 
 		result = lappend(result, opt);
 
-		if (tok == ';')
+		if (*tok == ';' || *tok == K_WHEN)
 			break;
 	}
 

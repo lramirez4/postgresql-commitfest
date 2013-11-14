@@ -2892,6 +2892,20 @@ exec_stmt_raise(PLpgSQL_execstate *estate, PLpgSQL_stmt_raise *stmt)
 	char	   *err_schema = NULL;
 	ListCell   *lc;
 
+	/* check condition when is entered */
+	if (stmt->cond != NULL)
+	{
+		bool		value;
+		bool		isnull;
+
+		value = exec_eval_boolean(estate, stmt->cond, &isnull);
+		exec_eval_cleanup(estate);
+
+		/* ignore statement, when result of condition is false or NULL */
+		if (isnull || value == false)
+			return PLPGSQL_RC_OK;
+	}
+
 	/* RAISE with no parameters: re-throw current exception */
 	if (stmt->condname == NULL && stmt->message == NULL &&
 		stmt->options == NIL)

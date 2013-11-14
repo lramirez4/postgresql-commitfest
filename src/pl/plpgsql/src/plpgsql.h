@@ -621,6 +621,7 @@ typedef struct
 	char	   *message;		/* old-style message format literal, or NULL */
 	List	   *params;			/* list of expressions for old-style message */
 	List	   *options;		/* list of PLpgSQL_raise_option */
+	PLpgSQL_expr *cond;		/* a boolean expression if it is used */
 } PLpgSQL_stmt_raise;
 
 typedef struct
