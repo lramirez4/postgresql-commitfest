@@ -653,7 +653,7 @@ mdprefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
  */
 void
 mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
-	   char *buffer)
+	   char *buffer, char *strategy)
 {
 	off_t		seekpos;
 	int			nbytes;
@@ -677,6 +677,7 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 				 errmsg("could not seek to block %u in file \"%s\": %m",
 						blocknum, FilePathName(v->mdfd_vfd))));
 
+	BufferHintIOAdvise(v->mdfd_vfd, buffer, BLCKSZ, strategy);
 	nbytes = FileRead(v->mdfd_vfd, buffer, BLCKSZ);
 
 	TRACE_POSTGRESQL_SMGR_MD_READ_DONE(forknum, blocknum,

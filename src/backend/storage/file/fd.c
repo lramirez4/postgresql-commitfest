@@ -73,8 +73,10 @@
 #include "catalog/pg_tablespace.h"
 #include "common/relpath.h"
 #include "pgstat.h"
+#include "storage/buf.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/bufmgr.h"
 #include "utils/guc.h"
 #include "utils/resowner_private.h"
 
@@ -383,6 +385,21 @@ pg_flush_data(int fd, off_t offset, off_t amount)
 	return 0;
 }
 
+/*
+ * pg_fadvise --- advise OS that the cache will need or not
+ *
+ * Not all platforms have posix_fadvise. If it does not support posix_fadvise,
+ * we do nothing about here.
+ */
+int
+pg_fadvise(int fd, off_t offset, off_t amount, int advise)
+{
+#if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED) && defined(POSIX_FADV_RANDOM) && defined(POSIX_FADV_SEQUENTIAL)
+	return posix_fadvise(fd, offset, amount, advise);
+#else
+	return 0;
+#endif
+}
 
 /*
  * fsync_fname -- fsync a file or directory, handling errors properly
@@ -1139,6 +1156,33 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 	}
 
 	return file;
+}
+
+/*
+ * Controling OS file cache using posix_fadvise()
+ */
+int
+FileCacheAdvise(File file, off_t offset, off_t amount, int advise)
+{
+	return pg_fadvise(VfdCache[file].fd, offset, amount, advise);
+}
+
+/*
+ * Select OS readahead strategy using buffer hint. If we select POSIX_FADV_SEQUENTIAL,
+ * readahead parameter becomes the maximum and can read more faster. On the other hand,
+ * if we select POSIX_FADV_RANDOM, readahead wasn't executed at all and file cache
+ * replace algorithm will be more smart. Because it can calculate correct number of accesses
+ * which are hot data.
+ */
+int
+BufferHintIOAdvise(File file, off_t offset, off_t amount, char *strategy)
+{
+	if(strategy != NULL)
+			/* use maximum readahead setting in kernel, we can read more faster */
+			return FileCacheAdvise(file, offset, amount, POSIX_FADV_SEQUENTIAL);
+	else
+			/* don't use readahead in kernel, so we can more effectively use OS file cache */
+			return FileCacheAdvise(file, offset, amount, POSIX_FADV_RANDOM);
 }
 
 /*

@@ -44,6 +44,8 @@ typedef enum
 /* in globals.c ... this duplicates miscadmin.h */
 extern PGDLLIMPORT int NBuffers;
 
+
+
 /* in bufmgr.c */
 extern bool zero_damaged_pages;
 extern int	bgwriter_lru_maxpages;

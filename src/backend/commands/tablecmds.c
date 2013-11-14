@@ -9117,7 +9117,7 @@ copy_relation_data(SMgrRelation src, SMgrRelation dst,
 		/* If we got a cancel signal during the copy of the data, quit */
 		CHECK_FOR_INTERRUPTS();
 
-		smgrread(src, forkNum, blkno, buf);
+		smgrread(src, forkNum, blkno, buf, BAS_BULKREAD);
 
 		if (!PageIsVerified(page, blkno))
 			ereport(ERROR,
