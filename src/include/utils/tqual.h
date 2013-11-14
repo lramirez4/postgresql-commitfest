@@ -102,7 +102,9 @@ extern bool DecodingSnapshotsActive(void);
  * To avoid leaking to much knowledge about reorderbuffer implementation
  * details this is implemented in reorderbuffer.c not tqual.c.
  */
-extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data, HeapTuple htup,
+extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
+										  Snapshot snapshot,
+										  HeapTuple htup,
 										  Buffer buffer,
 										  CommandId *cmin, CommandId *cmax);
 #endif   /* TQUAL_H */

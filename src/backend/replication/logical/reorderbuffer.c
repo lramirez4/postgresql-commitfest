@@ -50,8 +50,11 @@
 
 #include <unistd.h>
 
+#include "miscadmin.h"
+
 #include "access/transam.h"
 #include "access/xact.h"
+#include "access/rewriteheap.h"
 
 #include "catalog/catalog.h"
 
@@ -2588,24 +2591,266 @@ ReorderBufferToastReset(ReorderBuffer *rb, ReorderBufferTXN *txn)
  * always rely on stored cmin/cmax values because of two scenarios:
  *
  * * A tuple got changed multiple times during a single transaction and thus
- *	 has got a combocid. Combocid's are only valid for the duration of a single
- *	 transaction.
- * * A tuple with a cmin but no cmax (and thus no combocid) got deleted/updated
- *	 in another transaction than the one which created it which we are looking
- *	 at right now. As only one of cmin, cmax or combocid is actually stored in
- *	 the heap we don't have access to the the value we need anymore.
+ *	 has got a combocid. Combocid's are only valid for the duration of a
+ *	 single transaction.
+ * * A tuple with a cmin but no cmax (and thus no combocid) got
+ *	 deleted/updated in another transaction than the one which created it
+ *	 which we are looking at right now. As only one of cmin, cmax or combocid
+ *	 is actually stored in the heap we don't have access to the the value we
+ *	 need anymore.
  *
- * To resolve those problems we have a per-transaction hash of (cmin, cmax)
- * tuples keyed by (relfilenode, ctid) which contains the actual (cmin, cmax)
- * values. That also takes care of combocids by simply not caring about them at
- * all. As we have the real cmin/cmax values thats enough.
+ * To resolve those problems we have a per-transaction hash of (cmin,
+ * cmax) tuples keyed by (relfilenode, ctid) which contains the actual
+ * (cmin, cmax) values. That also takes care of combocids by simply
+ * not caring about them at all. As we have the real cmin/cmax values
+ * combocids aren't interesting.
  *
- * As we only care about catalog tuples here the overhead of this hashtable
- * should be acceptable.
+ * As we only care about catalog tuples here the overhead of this
+ * hashtable should be acceptable.
+ *
+ * Heap rewrites complicate this a bit, check rewriteheap.c for
+ * details.
  * -------------------------------------------------------------------------
  */
+
+
+#include "storage/fd.h"
+
+/* struct for qsort()ing mapping files by lsn somewhat efficiently */
+typedef struct RewriteMappingFile
+{
+	XLogRecPtr	lsn;
+	char		fname[MAXPGPATH];
+} RewriteMappingFile;
+
+#if NOT_USED
+static void
+DisplayMapping(HTAB *tuplecid_data)
+{
+	HASH_SEQ_STATUS hstat;
+	ReorderBufferTupleCidEnt *ent;
+
+	hash_seq_init(&hstat, tuplecid_data);
+	while ((ent = (ReorderBufferTupleCidEnt *) hash_seq_search(&hstat)) != NULL)
+	{
+		elog(DEBUG3, "mapping: node: %u/%u/%u tid: %u/%u cmin: %u, cmax: %u",
+			 ent->key.relnode.dbNode,
+			 ent->key.relnode.spcNode,
+			 ent->key.relnode.relNode,
+			 BlockIdGetBlockNumber(&ent->key.tid.ip_blkid),
+			 ent->key.tid.ip_posid,
+			 ent->cmin,
+			 ent->cmax
+			);
+	}
+}
+#endif
+
+/*
+ * Apply a single mapping file to tuplecid_data.
+ *
+ * The mapping file has to have been verified to be a) committed b) for our
+ * transaction c) applied in LSN order.
+ */
+static void
+ApplyLogicalMappingFile(HTAB *tuplecid_data, Oid relid, const char *fname)
+{
+	char		path[MAXPGPATH];
+	int			fd;
+	int			readBytes;
+	LogicalRewriteMappingData map;
+
+	sprintf(path, "pg_llog/mappings/%s", fname);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, 0);
+	if (fd < 0)
+		ereport(ERROR, (errmsg("could not open mappingfile %s: %m", path)));
+
+	while (true)
+	{
+		ReorderBufferTupleCidKey key;
+		ReorderBufferTupleCidEnt *ent;
+		ReorderBufferTupleCidEnt *new_ent;
+		bool found;
+
+		/* be careful about padding */
+		memset(&key, 0, sizeof(ReorderBufferTupleCidKey));
+
+		/* read all mappings till the end of the file */
+		readBytes = read(fd, &map, sizeof(LogicalRewriteMappingData));
+
+		if (readBytes < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read logical rewrite mapping \"%s\": %m",
+							path)));
+		else if (readBytes == 0) /* EOF */
+			break;
+		else if (readBytes != sizeof(LogicalRewriteMappingData))
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read logical rewrite mapping %s, read %d instead of %d",
+							path, readBytes,
+							(int32) sizeof(LogicalRewriteMappingData))));
+
+		key.relnode = map.old_node;
+		ItemPointerCopy(&map.old_tid,
+						&key.tid);
+
+
+		ent = (ReorderBufferTupleCidEnt *)
+			hash_search(tuplecid_data,
+						(void *) &key,
+						HASH_FIND,
+						NULL);
+
+		/* no existing mapping, no need to update */
+		if (!ent)
+			continue;
+
+		key.relnode = map.new_node;
+		ItemPointerCopy(&map.new_tid,
+						&key.tid);
+
+		new_ent = (ReorderBufferTupleCidEnt *)
+			hash_search(tuplecid_data,
+						(void *) &key,
+						HASH_ENTER,
+						&found);
+
+		if (found)
+		{
+			/*
+			 * Make sure the existing mapping makes sense. We sometime update
+			 * old records that did not yet have a cmax (e.g. pg_class' own
+			 * entry while rewriting it) during rewrites, so allow that.
+			 */
+			Assert(ent->cmin == InvalidCommandId || ent->cmin == new_ent->cmin);
+			Assert(ent->cmax == InvalidCommandId || ent->cmax == new_ent->cmax);
+		}
+		else
+		{
+			/* update mapping */
+			new_ent->cmin = ent->cmin;
+			new_ent->cmax = ent->cmax;
+			new_ent->combocid = ent->combocid;
+		}
+	}
+}
+
+
+/*
+ * check whether the transaciont id 'xid' in in the pre-sorted array 'xip'.
+ */
+static bool
+TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)
+{
+	return bsearch(&xid, xip, num,
+				   sizeof(TransactionId), xidComparator) != NULL;
+}
+
+/*
+ * qsort() comparator for sorting RewriteMappingFiles in LSN order.
+ */
+static int
+file_sort_by_lsn(const void *a_p, const void *b_p)
+{
+	RewriteMappingFile *a = *(RewriteMappingFile **)a_p;
+	RewriteMappingFile *b = *(RewriteMappingFile **)b_p;
+
+	if (a->lsn < b->lsn)
+		return -1;
+	else if (a->lsn > b->lsn)
+		return 1;
+	return 0;
+}
+
+/*
+ * Apply any existing logical remapping files if there are any targeted at our
+ * transaction for relid.
+ */
+static void
+UpdateLogicalMappings(HTAB *tuplecid_data, Oid relid, Snapshot snapshot)
+{
+	DIR		   *mapping_dir;
+	struct dirent *mapping_de;
+	List	   *files = NIL;
+	ListCell   *file;
+	RewriteMappingFile **files_a;
+	size_t		off;
+	Oid			dboid = IsSharedRelation(relid) ? InvalidOid : MyDatabaseId;
+
+	mapping_dir = AllocateDir("pg_llog/mappings");
+	while ((mapping_de = ReadDir(mapping_dir, "pg_llog/mappings")) != NULL)
+	{
+		Oid				f_dboid;
+		Oid				f_relid;
+		TransactionId	f_mapped_xid;
+		TransactionId	f_create_xid;
+		XLogRecPtr		f_lsn;
+		RewriteMappingFile *f;
+
+		if (strcmp(mapping_de->d_name, ".") == 0 ||
+			strcmp(mapping_de->d_name, "..") == 0)
+			continue;
+
+		/* XXX: should we warn about such files? */
+		if (strncmp(mapping_de->d_name, "map-", 4) != 0)
+			continue;
+
+		if (sscanf(mapping_de->d_name, LOGICAL_REWRITE_FORMAT,
+				   &f_dboid, &f_relid, &f_lsn,
+				   &f_mapped_xid, &f_create_xid) != 5)
+			elog(ERROR, "could not parse fname %s", mapping_de->d_name);
+
+		/* mapping for another database */
+		if (f_dboid != dboid)
+			continue;
+
+		/* mapping for another relation */
+		if (f_relid != relid)
+			continue;
+
+		/* did the creating transaction abort? */
+		if (!TransactionIdDidCommit(f_create_xid))
+			continue;
+
+		/* not for our transaction */
+		if (!TransactionIdInArray(f_mapped_xid, snapshot->subxip, snapshot->subxcnt))
+			continue;
+
+		/* ok, relevant, queue for apply */
+		f = palloc(sizeof(RewriteMappingFile));
+		f->lsn = f_lsn;
+		strcpy(f->fname, mapping_de->d_name);
+		files = lappend(files, f);
+	}
+	FreeDir(mapping_dir);
+
+	/* build array we can easily sort */
+	files_a = palloc(list_length(files) * sizeof(RewriteMappingFile *));
+	off = 0;
+	foreach(file, files)
+	{
+		files_a[off++] = lfirst(file);
+	}
+
+	/* sort files so we apply them in LSN order */
+	qsort(files_a, list_length(files), sizeof(RewriteMappingFile *),
+		  file_sort_by_lsn);
+
+	for(off = 0; off < list_length(files); off++)
+	{
+		RewriteMappingFile *f = files_a[off];
+		elog(DEBUG1, "applying mapping: %s in %u", f->fname,
+			snapshot->subxip[0]);
+		ApplyLogicalMappingFile(tuplecid_data, relid, f->fname);
+		pfree(f);
+	}
+}
+
 extern bool
 ResolveCminCmaxDuringDecoding(HTAB *tuplecid_data,
+							  Snapshot snapshot,
 							  HeapTuple htup, Buffer buffer,
 							  CommandId *cmin, CommandId *cmax)
 {
@@ -2613,6 +2858,7 @@ ResolveCminCmaxDuringDecoding(HTAB *tuplecid_data,
 	ReorderBufferTupleCidEnt *ent;
 	ForkNumber	forkno;
 	BlockNumber blockno;
+	bool updated_mapping = false;
 
 	/* be careful about padding */
 	memset(&key, 0, sizeof(key));
@@ -2632,13 +2878,26 @@ ResolveCminCmaxDuringDecoding(HTAB *tuplecid_data,
 	ItemPointerCopy(&htup->t_self,
 					&key.tid);
 
+restart:
 	ent = (ReorderBufferTupleCidEnt *)
 		hash_search(tuplecid_data,
 					(void *) &key,
 					HASH_FIND,
 					NULL);
 
-	if (ent == NULL)
+	/*
+	 * failed to find a mapping, check whether the table was rewritten and
+	 * apply mapping if so, but only do that once - there can be no new
+	 * mappings while we are in here since we have to hold a lock.
+	 */
+	if (ent == NULL && !updated_mapping)
+	{
+		UpdateLogicalMappings(tuplecid_data, htup->t_tableOid, snapshot);
+		/* now check but don't update for a mapping again */
+		updated_mapping = true;
+		goto restart;
+	}
+	else if (ent == NULL)
 		return false;
 
 	if (cmin)

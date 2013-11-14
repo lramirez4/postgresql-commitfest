@@ -1554,8 +1554,9 @@ HeapTupleSatisfiesMVCCDuringDecoding(HeapTuple htup, Snapshot snapshot,
 		 * cmin/cmax was stored in a combocid. S we need to to lookup the
 		 * actual values externally.
 		 */
-		resolved = ResolveCminCmaxDuringDecoding(tuplecid_data, htup,
-												 buffer, &cmin, &cmax);
+		resolved = ResolveCminCmaxDuringDecoding(tuplecid_data, snapshot,
+												 htup, buffer,
+												 &cmin, &cmax);
 
 		if (!resolved)
 			elog(ERROR, "could not resolve cmin/cmax of catalog tuple");
@@ -1619,8 +1620,9 @@ HeapTupleSatisfiesMVCCDuringDecoding(HeapTuple htup, Snapshot snapshot,
 		CommandId cmax = HeapTupleHeaderGetRawCommandId(tuple);
 
 		/* Lookup actual cmin/cmax values */
-		resolved = ResolveCminCmaxDuringDecoding(tuplecid_data, htup,
-												 buffer, &cmin, &cmax);
+		resolved = ResolveCminCmaxDuringDecoding(tuplecid_data, snapshot,
+												 htup, buffer,
+												 &cmin, &cmax);
 
 		if (!resolved)
 			elog(ERROR, "could not resolve combocid to cmax");

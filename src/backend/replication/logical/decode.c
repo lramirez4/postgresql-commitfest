@@ -350,6 +350,9 @@ DecodeHeap2Op(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 				break;
 			}
+		case XLOG_HEAP2_REWRITE:
+			/* only crash recovery/replication needs to care */
+			break;
 
 		/*
 		 * Everything else here is just low level physical stuff we're

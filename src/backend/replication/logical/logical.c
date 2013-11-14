@@ -792,7 +792,8 @@ StartupLogicalDecoding(XLogRecPtr checkPointRedo)
 			continue;
 
 		/* one of our own directories */
-		if (strcmp(logical_de->d_name, "snapshots") == 0)
+		if (strcmp(logical_de->d_name, "snapshots") == 0 ||
+			strcmp(logical_de->d_name, "mappings") == 0)
 			continue;
 
 		/* we crashed while a slot was being setup or deleted, clean up */

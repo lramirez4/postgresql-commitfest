@@ -7555,6 +7555,9 @@ heap2_redo(XLogRecPtr lsn, XLogRecord *record)
 			 * decoding.
 			 */
 			break;
+		case XLOG_HEAP2_REWRITE:
+			heap_xlog_logical_rewrite(lsn, record);
+			break;
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);
 	}
