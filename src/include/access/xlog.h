@@ -197,7 +197,8 @@ typedef enum WalLevel
 {
 	WAL_LEVEL_MINIMAL = 0,
 	WAL_LEVEL_ARCHIVE,
-	WAL_LEVEL_HOT_STANDBY
+	WAL_LEVEL_HOT_STANDBY,
+	WAL_LEVEL_ALL
 } WalLevel;
 extern int	wal_level;
 
@@ -212,6 +213,9 @@ extern int	wal_level;
 
 /* Do we need to WAL-log information required only for Hot Standby? */
 #define XLogStandbyInfoActive() (wal_level >= WAL_LEVEL_HOT_STANDBY)
+
+/* Do we need to WAL-log also when updating hint bit? */
+#define XLogAllXLogIsNeeded() (wal_level >= WAL_LEVEL_ALL)
 
 #ifdef WAL_DEBUG
 extern bool XLOG_DEBUG;

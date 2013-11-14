@@ -2635,7 +2635,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 		 * We don't check full_page_writes here because that logic is included
 		 * when we call XLogInsert() since the value changes dynamically.
 		 */
-		if (DataChecksumsEnabled() && (bufHdr->flags & BM_PERMANENT))
+		if ((DataChecksumsEnabled() || XLogAllXLogIsNeeded()) && (bufHdr->flags & BM_PERMANENT))
 		{
 			/*
 			 * If we're in recovery we cannot dirty a page because of a hint.
