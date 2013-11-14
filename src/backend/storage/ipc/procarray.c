@@ -52,6 +52,8 @@
 #include "access/twophase.h"
 #include "miscadmin.h"
 #include "replication/logical.h"
+#include "replication/walsender.h"
+#include "replication/walsender_private.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/spin.h"
