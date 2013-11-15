@@ -47,6 +47,7 @@ main(int argc, char *argv[])
 		{"pwprompt", no_argument, NULL, 'P'},
 		{"encrypted", no_argument, NULL, 'E'},
 		{"unencrypted", no_argument, NULL, 'N'},
+		{"roles", required_argument, NULL, 'g'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -57,6 +58,7 @@ main(int argc, char *argv[])
 	char	   *host = NULL;
 	char	   *port = NULL;
 	char	   *username = NULL;
+	char	   *roles = NULL;
 	enum trivalue prompt_password = TRI_DEFAULT;
 	bool		echo = false;
 	bool		interactive = false;
@@ -83,7 +85,7 @@ main(int argc, char *argv[])
 
 	handle_help_version_opts(argc, argv, "createuser", help);
 
-	while ((c = getopt_long(argc, argv, "h:p:U:wWedDsSaArRiIlLc:PEN",
+	while ((c = getopt_long(argc, argv, "h:p:U:g:wWedDsSaArRiIlLc:PEN",
 							long_options, &optindex)) != -1)
 	{
 		switch (c)
@@ -111,6 +113,9 @@ main(int argc, char *argv[])
 				break;
 			case 'D':
 				createdb = TRI_NO;
+				break;
+			case 'g':
+				roles = pg_strdup(optarg);
 				break;
 			case 's':
 			case 'a':
@@ -302,6 +307,8 @@ main(int argc, char *argv[])
 		appendPQExpBuffer(&sql, " NOREPLICATION");
 	if (conn_limit != NULL)
 		appendPQExpBuffer(&sql, " CONNECTION LIMIT %s", conn_limit);
+	if (roles != NULL)
+		appendPQExpBuffer(&sql, " IN ROLE %s", roles);
 	appendPQExpBuffer(&sql, ";\n");
 
 	if (echo)
@@ -334,6 +341,7 @@ help(const char *progname)
 	printf(_("  -D, --no-createdb         role cannot create databases (default)\n"));
 	printf(_("  -e, --echo                show the commands being sent to the server\n"));
 	printf(_("  -E, --encrypted           encrypt stored password\n"));
+	printf(_("  -g, --roles               roles to associate with this new role\n"));
 	printf(_("  -i, --inherit             role inherits privileges of roles it is a\n"
 			 "                            member of (default)\n"));
 	printf(_("  -I, --no-inherit          role does not inherit privileges\n"));

@@ -131,6 +131,16 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>-g</></term>
+      <term><option>--roles</></term>
+      <listitem>
+       <para>
+        Indicates roles to associate with this role.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-i</></term>
       <term><option>--inherit</></term>
       <listitem>
