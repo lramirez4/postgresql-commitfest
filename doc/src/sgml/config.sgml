@@ -895,6 +895,19 @@ include 'filename'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-ssl-ecdh-curve" xreflabel="ssl_ecdh_curve">
+      <term><varname>ssl_ecdh_curve</varname> (<type>string</type>)</term>
+      <indexterm>
+       <primary><varname>ssl_ecdh_curve</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies name of EC curve which will be used in ECDH key excanges.
+        Default is <literal>prime256p1</>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-password-encryption" xreflabel="password_encryption">
       <term><varname>password_encryption</varname> (<type>boolean</type>)</term>
       <indexterm>
