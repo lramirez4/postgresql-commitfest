@@ -278,6 +278,14 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
      </row>
 
      <row>
+      <entry><structname>pg_stat_socket</><indexterm><primary>pg_stat_socket</primary></indexterm></entry>
+      <entry>One row only, showing statistics about the
+       cluster's communication socket activity. See
+       <xref linkend="pg-stat-socket-view"> for details.
+     </entry>
+     </row>
+
+     <row>
       <entry><structname>pg_stat_database</><indexterm><primary>pg_stat_database</primary></indexterm></entry>
       <entry>One row per database, showing database-wide statistics. See
        <xref linkend="pg-stat-database-view"> for details.
@@ -627,6 +635,16 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
       that was executed.
      </entry>
     </row>
+    <row>
+     <entry><structfield>bytes_sent</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes sent over this backend's client connection</entry>
+    </row>
+    <row>
+     <entry><structfield>bytes_received</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes received over this backend's client connection</entry>
+    </row>
    </tbody>
    </tgroup>
   </table>
@@ -733,6 +751,98 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
   <para>
    The <structname>pg_stat_bgwriter</structname> view will always have a
    single row, containing global data for the cluster.
+  </para>
+
+  <table id="pg-stat-socket-view" xreflabel="pg_stat_socket">
+   <title><structname>pg_stat_socket</structname> View</title>
+
+   <tgroup cols="3">
+    <thead>
+    <row>
+      <entry>Column</entry>
+      <entry>Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><structfield>bytes_sent_total</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes sent over client connections (includes user backends and WAL senders).
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>bytes_received_total</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes received over client connections (includes user backends and WAL senders).
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>bytes_sent_backend</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes sent over client connections to a user backend.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>bytes_received_backend</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes received over client connections by a user backend.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>bytes_sent_walsender</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes sent over client connections to a WAL sender.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>bytes_received_walsender</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of bytes received over client connections by a WAL sender.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>conn_received</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of client connections received.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>conn_backend</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of client connections successfully established to a user backend.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>conn_walsender</></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of client connections successfully established to a WAL sender.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>stats_reset</></entry>
+      <entry><type>timestamp with time zone</type></entry>
+      <entry>Time at which these statistics were last reset</entry>
+     </row>
+    </tbody>
+    </tgroup>
+  </table>
+
+  <para>
+   The <structname>pg_stat_socket</structname> view will always have a
+   single row, containing global data for the cluster.
+   Only sockets created from inbound client connections are tracked (Unix sockets and TCP).
+   Streaming replication traffic is counted on the master, but not on the slave (See <xref linkend="pg-stat-replication-view"> for details.)
   </para>
 
   <table id="pg-stat-database-view" xreflabel="pg_stat_database">
@@ -857,6 +967,21 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
      <entry><type>double precision</></entry>
      <entry>Time spent writing data file blocks by backends in this database,
       in milliseconds</entry>
+    </row>
+    <row>
+     <entry><structfield>bytes_sent</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes sent over connections to user backends in this database</entry>
+    </row>
+    <row>
+     <entry><structfield>bytes_received</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes received over connections to user backends in this database</entry>
+    </row>
+    <row>
+     <entry><structfield>connections</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of client connections successfully established in this database</entry>
     </row>
     <row>
      <entry><structfield>stats_reset</></entry>
@@ -1417,6 +1542,16 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
      </entry>
     </row>
     <row>
+     <entry><structfield>bytes_sent</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes sent over this WAL sender's connection</entry>
+    </row>
+    <row>
+     <entry><structfield>bytes_received</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of bytes received over this WAL sender's connection</entry>
+    </row>
+    <row>
      <entry><structfield>state</></entry>
      <entry><type>text</></entry>
      <entry>Current WAL sender state</entry>
@@ -1613,6 +1748,8 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
        argument (requires superuser privileges).
        Calling <literal>pg_stat_reset_shared('bgwriter')</> will zero all the
        counters shown in the <structname>pg_stat_bgwriter</> view.
+       Calling <literal>pg_stat_reset_shared('socket')</> will zero all the
+       counters shown in the <structname>pg_stat_socket</> view.
       </entry>
      </row>
 

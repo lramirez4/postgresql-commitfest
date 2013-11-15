@@ -74,7 +74,7 @@
 #include "libpq/libpq.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
-
+#include "pgstat.h"
 
 #ifdef USE_SSL
 
@@ -307,6 +307,12 @@ rloop:
 		n = recv(port->sock, ptr, len, 0);
 
 		client_read_ended();
+
+		if (n > 0)
+		{
+			/* we received data from the socket that needs to be reported */
+			pgstat_report_bytesreceived(n);
+		}
 	}
 
 	return n;
@@ -441,7 +447,14 @@ wloop:
 	}
 	else
 #endif
+	{
 		n = send(port->sock, ptr, len, 0);
+		if (n > 0)
+		{
+			/* we sent data over the socket that needs to be reported */
+			pgstat_report_bytessent(n);
+		}
+	}
 
 	return n;
 }
@@ -488,6 +501,12 @@ my_sock_read(BIO *h, char *buf, int size)
 
 	client_read_ended();
 
+	if (res > 0)
+	{
+		/* we received data from the socket that needs to be reported */
+		pgstat_report_bytesreceived(res);
+	}
+
 	return res;
 }
 
@@ -503,6 +522,11 @@ my_sock_write(BIO *h, const char *buf, int size)
 		{
 			BIO_set_retry_write(h);
 		}
+	}
+	else
+	{
+		/* we sent data over the socket that needs to be reported */
+		pgstat_report_bytessent(res);
 	}
 
 	return res;

@@ -86,6 +86,9 @@ extern Datum pg_stat_get_db_temp_files(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_db_temp_bytes(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_db_blk_read_time(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_db_blk_write_time(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_db_bytes_sent(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_db_bytes_received(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_db_connections(PG_FUNCTION_ARGS);
 
 extern Datum pg_stat_get_bgwriter_timed_checkpoints(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_bgwriter_requested_checkpoints(PG_FUNCTION_ARGS);
@@ -98,6 +101,17 @@ extern Datum pg_stat_get_bgwriter_stat_reset_time(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_buf_written_backend(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_buf_fsync_backend(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_buf_alloc(PG_FUNCTION_ARGS);
+
+extern Datum pg_stat_get_bytes_sent(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_bytes_received(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_bytes_sent_backend(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_bytes_received_backend(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_bytes_sent_walsender(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_bytes_received_walsender(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_conn_received(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_conn_backend(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_conn_walsender(PG_FUNCTION_ARGS);
+extern Datum pg_stat_get_socket_stat_reset_time(PG_FUNCTION_ARGS);
 
 extern Datum pg_stat_get_xact_numscans(PG_FUNCTION_ARGS);
 extern Datum pg_stat_get_xact_tuples_returned(PG_FUNCTION_ARGS);
@@ -534,7 +548,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-		tupdesc = CreateTemplateTupleDesc(14, false);
+		tupdesc = CreateTemplateTupleDesc(16, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "datid",
 						   OIDOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "pid",
@@ -563,6 +577,10 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "client_port",
 						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "bytes_sent",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 16, "bytes_received",
+						   INT8OID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -614,8 +632,8 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		/* for each row */
-		Datum		values[14];
-		bool		nulls[14];
+		Datum		values[16];
+		bool		nulls[16];
 		HeapTuple	tuple;
 		PgBackendStatus *beentry;
 		SockAddr	zero_clientaddr;
@@ -773,6 +791,8 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 					nulls[13] = true;
 				}
 			}
+			values[14] = Int64GetDatum(beentry->st_bytes_sent);
+			values[15] = Int64GetDatum(beentry->st_bytes_received);
 		}
 		else
 		{
@@ -787,6 +807,8 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			nulls[11] = true;
 			nulls[12] = true;
 			nulls[13] = true;
+			nulls[14] = true;
+			nulls[15] = true;
 		}
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
@@ -1407,6 +1429,51 @@ pg_stat_get_db_blk_write_time(PG_FUNCTION_ARGS)
 }
 
 Datum
+pg_stat_get_db_bytes_sent(PG_FUNCTION_ARGS)
+{
+	Oid			dbid = PG_GETARG_OID(0);
+	double		result;
+	PgStat_StatDBEntry *dbentry;
+
+	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
+		result = 0;
+	else
+		result = dbentry->n_bytes_sent;
+
+	PG_RETURN_INT64(result);
+}
+
+Datum
+pg_stat_get_db_bytes_received(PG_FUNCTION_ARGS)
+{
+	Oid			dbid = PG_GETARG_OID(0);
+	double		result;
+	PgStat_StatDBEntry *dbentry;
+
+	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
+		result = 0;
+	else
+		result = dbentry->n_bytes_received;
+
+	PG_RETURN_INT64(result);
+}
+
+Datum
+pg_stat_get_db_connections(PG_FUNCTION_ARGS)
+{
+	Oid			dbid = PG_GETARG_OID(0);
+	double		result;
+	PgStat_StatDBEntry *dbentry;
+
+	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
+		result = 0;
+	else
+		result = dbentry->n_connections;
+
+	PG_RETURN_INT64(result);
+}
+
+Datum
 pg_stat_get_bgwriter_timed_checkpoints(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64(pgstat_fetch_global()->timed_checkpoints);
@@ -1453,7 +1520,7 @@ pg_stat_get_checkpoint_sync_time(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_bgwriter_stat_reset_time(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_global()->stat_reset_timestamp);
+	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_global()->bgwriter_stat_reset_timestamp);
 }
 
 Datum
@@ -1472,6 +1539,66 @@ Datum
 pg_stat_get_buf_alloc(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64(pgstat_fetch_global()->buf_alloc);
+}
+
+Datum
+pg_stat_get_bytes_sent(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_sent);
+}
+
+Datum
+pg_stat_get_bytes_received(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_received);
+}
+
+Datum
+pg_stat_get_bytes_sent_backend(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_sent_backend);
+}
+
+Datum
+pg_stat_get_bytes_received_backend(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_received_backend);
+}
+
+Datum
+pg_stat_get_bytes_sent_walsender(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_sent_walsender);
+}
+
+Datum
+pg_stat_get_bytes_received_walsender(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->bytes_received_walsender);
+}
+
+Datum
+pg_stat_get_conn_received(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->conn_received);
+}
+
+Datum
+pg_stat_get_conn_backend(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->conn_backend);
+}
+
+Datum
+pg_stat_get_conn_walsender(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->conn_walsender);
+}
+
+Datum
+pg_stat_get_socket_stat_reset_time(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_global()->socket_stat_reset_timestamp);
 }
 
 Datum

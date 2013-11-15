@@ -1825,6 +1825,8 @@ retry1:
 					 errmsg("failed to send SSL negotiation response: %m")));
 			return STATUS_ERROR;	/* close the connection */
 		}
+		else
+			pgstat_report_bytessent(1);
 
 #ifdef USE_SSL
 		if (SSLok == 'S' && secure_open_server(port) == -1)
@@ -3839,6 +3841,9 @@ report_fork_failure_to_client(Port *port, int errnum)
 	{
 		rc = send(port->sock, buffer, strlen(buffer) + 1, 0);
 	} while (rc < 0 && errno == EINTR);
+
+	if (rc > 0)
+		pgstat_report_bytessent(rc);
 }
 
 
@@ -3929,6 +3934,8 @@ BackendInitialize(Port *port)
 		snprintf(remote_ps_data, sizeof(remote_ps_data), "%s", remote_host);
 	else
 		snprintf(remote_ps_data, sizeof(remote_ps_data), "%s(%s)", remote_host, remote_port);
+
+	pgstat_report_connreceived();
 
 	if (Log_connections)
 	{

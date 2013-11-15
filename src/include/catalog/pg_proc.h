@@ -2626,7 +2626,7 @@ DATA(insert OID = 3057 ( pg_stat_get_autoanalyze_count PGNSP PGUID 12 1 0 0 0 f 
 DESCR("statistics: number of auto analyzes for a table");
 DATA(insert OID = 1936 (  pg_stat_get_backend_idset		PGNSP PGUID 12 1 100 0 0 f f f f t t s 0 0 23 "" _null_ _null_ _null_ _null_ pg_stat_get_backend_idset _null_ _null_ _null_ ));
 DESCR("statistics: currently active backend IDs");
-DATA(insert OID = 2022 (  pg_stat_get_activity			PGNSP PGUID 12 1 100 0 0 f f f f f t s 1 0 2249 "23" "{23,26,23,26,25,25,25,16,1184,1184,1184,1184,869,25,23}" "{i,o,o,o,o,o,o,o,o,o,o,o,o,o,o}" "{pid,datid,pid,usesysid,application_name,state,query,waiting,xact_start,query_start,backend_start,state_change,client_addr,client_hostname,client_port}" _null_ pg_stat_get_activity _null_ _null_ _null_ ));
+DATA(insert OID = 2022 (  pg_stat_get_activity			PGNSP PGUID 12 1 100 0 0 f f f f f t s 1 0 2249 "23" "{23,26,23,26,25,25,25,16,1184,1184,1184,1184,869,25,23,20,20}" "{i,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o}" "{pid,datid,pid,usesysid,application_name,state,query,waiting,xact_start,query_start,backend_start,state_change,client_addr,client_hostname,client_port,bytes_sent,bytes_received}" _null_ pg_stat_get_activity _null_ _null_ _null_ ));
 DESCR("statistics: information about currently active backends");
 DATA(insert OID = 3099 (  pg_stat_get_wal_senders	PGNSP PGUID 12 1 10 0 0 f f f f f t s 0 0 2249 "" "{23,25,25,25,25,25,23,25}" "{o,o,o,o,o,o,o,o}" "{pid,state,sent_location,write_location,flush_location,replay_location,sync_priority,sync_state}" _null_ pg_stat_get_wal_senders _null_ _null_ _null_ ));
 DESCR("statistics: information about currently active replication");
@@ -2696,6 +2696,12 @@ DATA(insert OID = 2844 (  pg_stat_get_db_blk_read_time	PGNSP PGUID 12 1 0 0 0 f 
 DESCR("statistics: block read time, in msec");
 DATA(insert OID = 2845 (  pg_stat_get_db_blk_write_time PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 701 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_blk_write_time _null_ _null_ _null_ ));
 DESCR("statistics: block write time, in msec");
+DATA(insert OID = 3195 (  pg_stat_get_db_bytes_sent PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_bytes_sent _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes sent over client connections");
+DATA(insert OID = 3196 (  pg_stat_get_db_bytes_received PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_bytes_received _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes received over client connections");
+DATA(insert OID = 3197 (  pg_stat_get_db_connections PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_connections _null_ _null_ _null_ ));
+DESCR("statistics: number of successful client connections");
 DATA(insert OID = 2769 ( pg_stat_get_bgwriter_timed_checkpoints PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bgwriter_timed_checkpoints _null_ _null_ _null_ ));
 DESCR("statistics: number of timed checkpoints started by the bgwriter");
 DATA(insert OID = 2770 ( pg_stat_get_bgwriter_requested_checkpoints PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bgwriter_requested_checkpoints _null_ _null_ _null_ ));
@@ -2718,6 +2724,27 @@ DATA(insert OID = 3063 ( pg_stat_get_buf_fsync_backend PGNSP PGUID 12 1 0 0 0 f 
 DESCR("statistics: number of backend buffer writes that did their own fsync");
 DATA(insert OID = 2859 ( pg_stat_get_buf_alloc			PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_buf_alloc _null_ _null_ _null_ ));
 DESCR("statistics: number of buffer allocations");
+
+DATA(insert OID = 3198 ( pg_stat_get_bytes_sent PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_sent _null_ _null_ _null_ ));
+DESCR("statistics: total number of bytes sent over client connections");
+DATA(insert OID = 3199 ( pg_stat_get_bytes_received PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_received _null_ _null_ _null_ ));
+DESCR("statistics: total number of bytes received over client connections");
+DATA(insert OID = 3200 ( pg_stat_get_bytes_sent_backend PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_sent_backend _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes sent over client connections to user backends");
+DATA(insert OID = 3201 ( pg_stat_get_bytes_received_backend PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_received_backend _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes received over client connections from user backends");
+DATA(insert OID = 3202 ( pg_stat_get_bytes_sent_walsender PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_sent_walsender _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes sent over client connections to WAL senders");
+DATA(insert OID = 3203 ( pg_stat_get_bytes_received_walsender PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bytes_received_walsender _null_ _null_ _null_ ));
+DESCR("statistics: number of bytes received over client connections from WAL senders");
+DATA(insert OID = 3204 ( pg_stat_get_conn_received PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_conn_received _null_ _null_ _null_ ));
+DESCR("statistics: number of client connections received");
+DATA(insert OID = 3205 ( pg_stat_get_conn_backend PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_conn_backend _null_ _null_ _null_ ));
+DESCR("statistics: number of successful client connections to a user backend");
+DATA(insert OID = 3206 ( pg_stat_get_conn_walsender PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_conn_walsender _null_ _null_ _null_ ));
+DESCR("statistics: number of successful client connections to a WAL sender");
+DATA(insert OID = 3207 ( pg_stat_get_socket_stat_reset_time PGNSP PGUID 12 1 0 0 0 f f f f t f s 0 0 1184 "" _null_ _null_ _null_ _null_	pg_stat_get_socket_stat_reset_time _null_ _null_ _null_ ));
+DESCR("statistics: last reset for the client connection statistics");
 
 DATA(insert OID = 2978 (  pg_stat_get_function_calls		PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_function_calls _null_ _null_ _null_ ));
 DESCR("statistics: number of function calls");

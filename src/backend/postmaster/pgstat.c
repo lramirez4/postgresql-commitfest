@@ -48,6 +48,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
+#include "replication/walsender.h"
 #include "storage/backendid.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -298,6 +299,10 @@ static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
+static void pgstat_recv_bytessent(PgStat_MsgBytesTransferred *msg, int len);
+static void pgstat_recv_bytesreceived(PgStat_MsgBytesTransferred *msg, int len);
+static void pgstat_recv_connreceived(PgStat_MsgConnReceived *msg, int len);
+static void pgstat_recv_connsucceeded(PgStat_MsgConnSucceeded *msg, int len);
 
 /* ------------------------------------------------------------
  * Public functions called from postmaster follow
@@ -1249,11 +1254,13 @@ pgstat_reset_shared_counters(const char *target)
 
 	if (strcmp(target, "bgwriter") == 0)
 		msg.m_resettarget = RESET_BGWRITER;
+	else if (strcmp(target, "socket") == 0)
+		msg.m_resettarget = RESET_SOCKET;
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("unrecognized reset target: \"%s\"", target),
-				 errhint("Target must be \"bgwriter\".")));
+				 errhint("Target must be \"bgwriter\" or \"socket\".")));
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_RESETSHAREDCOUNTER);
 	pgstat_send(&msg, sizeof(msg));
@@ -2531,6 +2538,8 @@ pgstat_bestart(void)
 	beentry->st_clienthostname[NAMEDATALEN - 1] = '\0';
 	beentry->st_appname[NAMEDATALEN - 1] = '\0';
 	beentry->st_activity[pgstat_track_activity_query_size - 1] = '\0';
+	beentry->st_bytes_sent = 0;
+	beentry->st_bytes_received = 0;
 
 	beentry->st_changecount++;
 	Assert((beentry->st_changecount & 1) == 0);
@@ -2541,6 +2550,9 @@ pgstat_bestart(void)
 	/* Update app name to current GUC setting */
 	if (application_name)
 		pgstat_report_appname(application_name);
+
+	if (MyProcPort)
+		pgstat_report_connsucceeded();
 }
 
 /*
@@ -2738,6 +2750,108 @@ pgstat_report_waiting(bool waiting)
 	beentry->st_waiting = waiting;
 }
 
+/* --------
+ * pgstat_report_bytessent() -
+ *
+ *    Tell the collector about data sent over a socket.
+ *    It is the caller's responsibility not invoke with a negative len
+ * --------
+ */
+void
+pgstat_report_bytessent(int count)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+	PgStat_MsgBytesTransferred msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	/* this function can be called by the postmaster */
+	if (beentry != NULL) {
+		beentry->st_changecount++;
+		beentry->st_bytes_sent += count;
+		beentry->st_changecount++;
+		Assert((beentry->st_changecount & 1) == 0);
+	}
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_BYTESSENT);
+	/* MyDatabaseId might be invalid, we'll check it in the msg receiver */
+	msg.m_databaseid = MyDatabaseId;
+	msg.m_bytes_transferred = count;
+	msg.m_walsender = am_walsender;
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_bytesreceived() -
+ *
+ *    Tell the collector about data received from a socket.
+ *    It is the caller's responsibility not invoke with a negative len
+ * --------
+ */
+void
+pgstat_report_bytesreceived(int count)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+	PgStat_MsgBytesTransferred msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	/* this function can be called by the postmaster */
+	if (beentry != NULL) {
+		beentry->st_changecount++;
+		beentry->st_bytes_received += count;
+		beentry->st_changecount++;
+		Assert((beentry->st_changecount & 1) == 0);
+	}
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_BYTESRECEIVED);
+	/* MyDatabaseId might be invalid, we'll check it in the msg receiver */
+	msg.m_databaseid = MyDatabaseId;
+	msg.m_bytes_transferred = count;
+	msg.m_walsender = am_walsender;
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_connreceived() -
+ *
+ *    Tell the collector about a client connection that was received.
+ * --------
+ */
+void
+pgstat_report_connreceived(void)
+{
+	PgStat_MsgConnReceived msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CONNRECEIVED);
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_connsucceeded() -
+ *
+ *    Tell the collector about a client connection that was successfully established.
+ * --------
+ */
+void
+pgstat_report_connsucceeded(void)
+{
+	PgStat_MsgConnSucceeded msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CONNSUCCEEDED);
+	/* MyDatabaseId might be invalid, we'll check it in the msg receiver */
+	msg.m_databaseid = MyDatabaseId;
+	msg.m_walsender = am_walsender;
+	pgstat_send(&msg, sizeof(msg));
+}
 
 /* ----------
  * pgstat_read_current_status() -
@@ -3290,6 +3404,22 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_tempfile((PgStat_MsgTempFile *) &msg, len);
 					break;
 
+				case PGSTAT_MTYPE_BYTESSENT:
+					pgstat_recv_bytessent((PgStat_MsgBytesTransferred *) &msg, len);
+					break;
+
+				case PGSTAT_MTYPE_BYTESRECEIVED:
+					pgstat_recv_bytesreceived((PgStat_MsgBytesTransferred *) &msg, len);
+					break;
+
+				case PGSTAT_MTYPE_CONNRECEIVED:
+					pgstat_recv_connreceived((PgStat_MsgConnReceived *) &msg, len);
+					break;
+
+				case PGSTAT_MTYPE_CONNSUCCEEDED:
+					pgstat_recv_connsucceeded((PgStat_MsgConnSucceeded *) &msg, len);
+					break;
+
 				default:
 					break;
 			}
@@ -3390,6 +3520,9 @@ reset_dbentry_counters(PgStat_StatDBEntry *dbentry)
 	dbentry->n_deadlocks = 0;
 	dbentry->n_block_read_time = 0;
 	dbentry->n_block_write_time = 0;
+	dbentry->n_bytes_sent = 0;
+	dbentry->n_bytes_received = 0;
+	dbentry->n_connections = 0;
 
 	dbentry->stat_reset_timestamp = GetCurrentTimestamp();
 	dbentry->stats_timestamp = 0;
@@ -3798,6 +3931,7 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	int32		format_id;
 	bool		found;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
+	TimestampTz now;
 
 	/*
 	 * The tables will live in pgStatLocalContext.
@@ -3825,7 +3959,9 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	 * Set the current timestamp (will be kept only in case we can't load an
 	 * existing statsfile).
 	 */
-	globalStats.stat_reset_timestamp = GetCurrentTimestamp();
+	now = GetCurrentTimestamp();
+	globalStats.bgwriter_stat_reset_timestamp = now;
+	globalStats.socket_stat_reset_timestamp = now;
 
 	/*
 	 * Try to open the stats file. If it doesn't exist, the backends simply
@@ -4722,9 +4858,34 @@ pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len)
 {
 	if (msg->m_resettarget == RESET_BGWRITER)
 	{
+		globalStats.stats_timestamp = 0;
 		/* Reset the global background writer statistics for the cluster. */
-		memset(&globalStats, 0, sizeof(globalStats));
-		globalStats.stat_reset_timestamp = GetCurrentTimestamp();
+		globalStats.timed_checkpoints = 0;
+		globalStats.requested_checkpoints = 0;
+		globalStats.checkpoint_write_time = 0;
+		globalStats.checkpoint_sync_time = 0;
+		globalStats.buf_written_checkpoints = 0;
+		globalStats.buf_written_clean = 0;
+		globalStats.maxwritten_clean = 0;
+		globalStats.buf_written_backend = 0;
+		globalStats.buf_fsync_backend = 0;
+		globalStats.buf_alloc = 0;
+		globalStats.bgwriter_stat_reset_timestamp = GetCurrentTimestamp();
+	}
+	else if (msg->m_resettarget == RESET_SOCKET)
+	{
+		globalStats.stats_timestamp = 0;
+		/* Reset the global socket transfer statistics for the cluster. */
+		globalStats.bytes_sent = 0;
+		globalStats.bytes_received = 0;
+		globalStats.bytes_sent_backend = 0;
+		globalStats.bytes_received_backend = 0;
+		globalStats.bytes_sent_walsender = 0;
+		globalStats.bytes_received_walsender = 0;
+		globalStats.conn_received = 0;
+		globalStats.conn_backend = 0;
+		globalStats.conn_walsender = 0;
+		globalStats.socket_stat_reset_timestamp = GetCurrentTimestamp();
 	}
 
 	/*
@@ -4948,6 +5109,90 @@ pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len)
 
 	dbentry->n_temp_bytes += msg->m_filesize;
 	dbentry->n_temp_files += 1;
+}
+
+/* ----------
+ * pgstat_recv_bytessent() -
+ *
+ *    Process a BYTESSENT message.
+ * ----------
+ */
+static void
+pgstat_recv_bytessent(PgStat_MsgBytesTransferred *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	globalStats.bytes_sent += msg->m_bytes_transferred;
+
+	if (msg->m_walsender)
+		globalStats.bytes_sent_walsender += msg->m_bytes_transferred;
+
+	/* can be called before we have connected to a specific database or by walsender */
+	if (OidIsValid(msg->m_databaseid)) {
+		globalStats.bytes_sent_backend += msg->m_bytes_transferred;
+
+		dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+		dbentry->n_bytes_sent += msg->m_bytes_transferred;
+	}
+}
+
+/* ----------
+ * pgstat_recv_bytesreceived() -
+ *
+ *    Process a BYTESRECEIVED message.
+ * ----------
+ */
+static void
+pgstat_recv_bytesreceived(PgStat_MsgBytesTransferred *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	globalStats.bytes_received += msg->m_bytes_transferred;
+
+	if (msg->m_walsender)
+		globalStats.bytes_received_walsender += msg->m_bytes_transferred;
+
+	/* can be called before we have connected to a specific database or by walsender */
+	if (OidIsValid(msg->m_databaseid)) {
+		globalStats.bytes_received_backend += msg->m_bytes_transferred;
+
+		dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+		dbentry->n_bytes_received += msg->m_bytes_transferred;
+	}
+}
+
+/* ----------
+ * pgstat_recv_connreceived() -
+ *
+ *    Process a CONNRECEIVED message.
+ * ----------
+ */
+static void
+pgstat_recv_connreceived(PgStat_MsgConnReceived *msg, int len)
+{
+	globalStats.conn_received += 1;
+}
+
+/* ----------
+ * pgstat_recv_connsucceeded() -
+ *
+ *    Process a CONNSUCCEEDED message.
+ * ----------
+ */
+static void
+pgstat_recv_connsucceeded(PgStat_MsgConnSucceeded *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	if (msg->m_walsender)
+		globalStats.conn_walsender += 1;
+	else
+		globalStats.conn_backend += 1;
+
+	if (OidIsValid(msg->m_databaseid)) {
+		dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+		dbentry->n_connections += 1;
+	}
 }
 
 /* ----------

@@ -49,7 +49,11 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_FUNCPURGE,
 	PGSTAT_MTYPE_RECOVERYCONFLICT,
 	PGSTAT_MTYPE_TEMPFILE,
-	PGSTAT_MTYPE_DEADLOCK
+	PGSTAT_MTYPE_DEADLOCK,
+	PGSTAT_MTYPE_BYTESSENT,
+	PGSTAT_MTYPE_BYTESRECEIVED,
+	PGSTAT_MTYPE_CONNRECEIVED,
+	PGSTAT_MTYPE_CONNSUCCEEDED
 } StatMsgType;
 
 /* ----------
@@ -102,7 +106,8 @@ typedef struct PgStat_TableCounts
 /* Possible targets for resetting cluster-wide shared values */
 typedef enum PgStat_Shared_Reset_Target
 {
-	RESET_BGWRITER
+	RESET_BGWRITER,
+	RESET_SOCKET
 } PgStat_Shared_Reset_Target;
 
 /* Possible object types for resetting single counters */
@@ -397,6 +402,45 @@ typedef struct PgStat_MsgTempFile
 } PgStat_MsgTempFile;
 
 /* ----------
+  * PgStat_MsgBytesTransferred
+  *
+  * Sent upon sending or receiving data over a client connection.
+  * The message header determines direction.
+  * ----------
+  */
+typedef struct PgStat_MsgBytesTransferred
+{
+	PgStat_MsgHdr	m_hdr;
+	Oid			m_databaseid;
+	int			m_bytes_transferred;
+	bool		m_walsender;
+} PgStat_MsgBytesTransferred;
+
+/* ----------
+  * PgStat_MsgConnReceived
+  *
+  * Sent upon receiving a client connection.
+  * ----------
+  */
+typedef struct PgStat_MsgConnReceived
+{
+	PgStat_MsgHdr	m_hdr;
+} PgStat_MsgConnReceived;
+
+/* ----------
+  * PgStat_MsgConnSucceeded
+  *
+  * Sent upon client's successful connection.
+  * ----------
+  */
+typedef struct PgStat_MsgConnSucceeded
+{
+	PgStat_MsgHdr	m_hdr;
+	Oid			m_databaseid;
+	bool		m_walsender;
+} PgStat_MsgConnSucceeded;
+
+/* ----------
  * PgStat_FunctionCounts	The actual per-function counts kept by a backend
  *
  * This struct should contain only actual event counters, because we memcmp
@@ -515,7 +559,7 @@ typedef union PgStat_Msg
  * ------------------------------------------------------------
  */
 
-#define PGSTAT_FILE_FORMAT_ID	0x01A5BC9B
+#define PGSTAT_FILE_FORMAT_ID	0x01A5BC9C
 
 /* ----------
  * PgStat_StatDBEntry			The collector's data per database
@@ -544,7 +588,11 @@ typedef struct PgStat_StatDBEntry
 	PgStat_Counter n_deadlocks;
 	PgStat_Counter n_block_read_time;	/* times in microseconds */
 	PgStat_Counter n_block_write_time;
-
+	/* communication socket transfer counter in bytes (backend to client connections) */
+	PgStat_Counter n_bytes_sent;
+	/* communication socket transfer counter in bytes (client to backend connections) */
+	PgStat_Counter n_bytes_received;
+	PgStat_Counter n_connections; /* client connections succeeded */
 	TimestampTz stat_reset_timestamp;
 	TimestampTz stats_timestamp;	/* time of db stats file update */
 
@@ -614,6 +662,7 @@ typedef struct PgStat_StatFuncEntry
 typedef struct PgStat_GlobalStats
 {
 	TimestampTz stats_timestamp;	/* time of stats file update */
+	/* bgwriter stats */
 	PgStat_Counter timed_checkpoints;
 	PgStat_Counter requested_checkpoints;
 	PgStat_Counter checkpoint_write_time;		/* times in milliseconds */
@@ -624,7 +673,18 @@ typedef struct PgStat_GlobalStats
 	PgStat_Counter buf_written_backend;
 	PgStat_Counter buf_fsync_backend;
 	PgStat_Counter buf_alloc;
-	TimestampTz stat_reset_timestamp;
+	TimestampTz bgwriter_stat_reset_timestamp;
+	/* client connection stats */
+	PgStat_Counter bytes_sent; /* in bytes (cluster to client) */
+	PgStat_Counter bytes_received; /* in bytes (client to cluster) */
+	PgStat_Counter bytes_sent_backend; /* in bytes (backend to client) */
+	PgStat_Counter bytes_received_backend; /* in bytes (client to backend) */
+	PgStat_Counter bytes_sent_walsender; /* in bytes (walsender to client) */
+	PgStat_Counter bytes_received_walsender; /* in bytes (client to walsender) */
+	PgStat_Counter conn_received; /* client connections received */
+	PgStat_Counter conn_backend; /* successful client connections to a backend */
+	PgStat_Counter conn_walsender; /* successful client connections to a walsender */
+	TimestampTz socket_stat_reset_timestamp;
 } PgStat_GlobalStats;
 
 
@@ -697,6 +757,12 @@ typedef struct PgBackendStatus
 
 	/* current command string; MUST be null-terminated */
 	char	   *st_activity;
+
+	/* communication socket transfer counter in bytes (backend to client connections) */
+	unsigned long st_bytes_sent;
+	/* communication socket transfer counter in bytes (client to backend connections) */
+	unsigned long st_bytes_received;
+
 } PgBackendStatus;
 
 /*
@@ -788,6 +854,11 @@ extern void pgstat_report_tempfile(size_t filesize);
 extern void pgstat_report_appname(const char *appname);
 extern void pgstat_report_xact_timestamp(TimestampTz tstamp);
 extern void pgstat_report_waiting(bool waiting);
+extern void pgstat_report_bytessent(int count);
+extern void pgstat_report_bytesreceived(int count);
+extern void pgstat_report_connreceived(void);
+extern void pgstat_report_connsucceeded(void);
+
 extern const char *pgstat_get_backend_current_activity(int pid, bool checkUser);
 extern const char *pgstat_get_crashed_backend_activity(int pid, char *buffer,
 									int buflen);

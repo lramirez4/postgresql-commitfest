@@ -586,7 +586,9 @@ CREATE VIEW pg_stat_activity AS
             S.state_change,
             S.waiting,
             S.state,
-            S.query
+            S.query,
+            S.bytes_sent,
+            S.bytes_received
     FROM pg_database D, pg_stat_get_activity(NULL) AS S, pg_authid U
     WHERE S.datid = D.oid AND
             S.usesysid = U.oid;
@@ -601,6 +603,8 @@ CREATE VIEW pg_stat_replication AS
             S.client_hostname,
             S.client_port,
             S.backend_start,
+            S.bytes_sent,
+            S.bytes_received,
             W.state,
             W.sent_location,
             W.write_location,
@@ -634,6 +638,9 @@ CREATE VIEW pg_stat_database AS
             pg_stat_get_db_deadlocks(D.oid) AS deadlocks,
             pg_stat_get_db_blk_read_time(D.oid) AS blk_read_time,
             pg_stat_get_db_blk_write_time(D.oid) AS blk_write_time,
+            pg_stat_get_db_bytes_sent(D.oid) AS bytes_sent,
+            pg_stat_get_db_bytes_received(D.oid) AS bytes_received,
+            pg_stat_get_db_connections(D.oid) AS connections,
             pg_stat_get_db_stat_reset_time(D.oid) AS stats_reset
     FROM pg_database D;
 
@@ -685,6 +692,19 @@ CREATE VIEW pg_stat_bgwriter AS
         pg_stat_get_buf_fsync_backend() AS buffers_backend_fsync,
         pg_stat_get_buf_alloc() AS buffers_alloc,
         pg_stat_get_bgwriter_stat_reset_time() AS stats_reset;
+
+CREATE VIEW pg_stat_socket AS
+    SELECT
+        pg_stat_get_bytes_sent() AS bytes_sent_total,
+        pg_stat_get_bytes_received() AS bytes_received_total,
+        pg_stat_get_bytes_sent_backend() AS bytes_sent_backend,
+        pg_stat_get_bytes_received_backend() AS bytes_received_backend,
+        pg_stat_get_bytes_sent_walsender() AS bytes_sent_walsender,
+        pg_stat_get_bytes_received_walsender() AS bytes_received_walsender,
+        pg_stat_get_conn_received() AS conn_received,
+        pg_stat_get_conn_backend() AS conn_backend,
+        pg_stat_get_conn_walsender() AS conn_walsender,
+        pg_stat_get_socket_stat_reset_time() AS stats_reset;
 
 CREATE VIEW pg_user_mappings AS
     SELECT
