@@ -1994,6 +1994,9 @@ DESCR("is a column updatable");
 DATA(insert OID = 1250 (  unique_key_recheck	PGNSP PGUID 12 1 0 0 0 f f f f t f v 0 0 2279 "" _null_ _null_ _null_ _null_ unique_key_recheck _null_ _null_ _null_ ));
 DESCR("deferred UNIQUE constraint check");
 
+DATA(insert OID = 3789 (  assertion_check	PGNSP PGUID 12 1 0 0 0 f f f f t f v 0 0 2279 "" _null_ _null_ _null_ _null_ assertion_check _null_ _null_ _null_ ));
+DESCR("assertion check");
+
 /* Generic referential integrity constraint triggers */
 DATA(insert OID = 1644 (  RI_FKey_check_ins		PGNSP PGUID 12 1 0 0 0 f f f f t f v 0 0 2279 "" _null_ _null_ _null_ _null_ RI_FKey_check_ins _null_ _null_ _null_ ));
 DESCR("referential integrity FOREIGN KEY ... REFERENCES");

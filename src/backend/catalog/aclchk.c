@@ -3291,6 +3291,8 @@ static const char *const no_priv_msg[MAX_ACL_KIND] =
 	gettext_noop("permission denied for operator family %s"),
 	/* ACL_KIND_COLLATION */
 	gettext_noop("permission denied for collation %s"),
+	/* ACL_KIND_CONSTRAINT */
+	gettext_noop("permission denied for constraint %s"),
 	/* ACL_KIND_CONVERSION */
 	gettext_noop("permission denied for conversion %s"),
 	/* ACL_KIND_TABLESPACE */
@@ -3337,6 +3339,8 @@ static const char *const not_owner_msg[MAX_ACL_KIND] =
 	gettext_noop("must be owner of operator family %s"),
 	/* ACL_KIND_COLLATION */
 	gettext_noop("must be owner of collation %s"),
+	/* ACL_KIND_CONSTRAINT */
+	gettext_noop("must be owner of constraint %s"),
 	/* ACL_KIND_CONVERSION */
 	gettext_noop("must be owner of conversion %s"),
 	/* ACL_KIND_TABLESPACE */
@@ -4980,6 +4984,33 @@ pg_collation_ownercheck(Oid coll_oid, Oid roleid)
 	ReleaseSysCache(tuple);
 
 	return has_privs_of_role(roleid, ownerId);
+}
+
+/*
+ * Ownership check for a constraint (specified by OID).
+ */
+bool
+pg_constraint_ownercheck(Oid constr_oid, Oid roleid)
+{
+	HeapTuple   tuple;
+	//Oid           ownerId;
+
+	/* Superusers bypass all permission checking. */
+	if (superuser_arg(roleid))
+		return true;
+
+	tuple = SearchSysCache1(CONSTROID, ObjectIdGetDatum(constr_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("constraint with OID %u does not exist", constr_oid)));
+
+	//FIXME: ownerId = ((Form_pg_constraint) GETSTRUCT(tuple))->conowner;
+
+	ReleaseSysCache(tuple);
+
+	//return has_privs_of_role(roleid, ownerId);
+	return true; // for now
 }
 
 /*

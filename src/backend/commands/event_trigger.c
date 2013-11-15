@@ -68,6 +68,7 @@ typedef enum
 
 static event_trigger_support_data event_trigger_support[] = {
 	{"AGGREGATE", true},
+	{"ASSERTION", true},
 	{"CAST", true},
 	{"CONSTRAINT", true},
 	{"COLLATION", true},
@@ -914,6 +915,7 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 			/* no support for event triggers on event triggers */
 			return false;
 		case OBJECT_AGGREGATE:
+		case OBJECT_ASSERTION:
 		case OBJECT_ATTRIBUTE:
 		case OBJECT_CAST:
 		case OBJECT_COLUMN:

@@ -251,6 +251,7 @@ transformAggregateCall(ParseState *pstate, Aggref *agg,
 			break;
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:
+		case EXPR_KIND_ASSERTION_CHECK:
 			err = _("aggregate functions are not allowed in check constraints");
 			break;
 		case EXPR_KIND_COLUMN_DEFAULT:
@@ -526,6 +527,7 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 			break;
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:
+		case EXPR_KIND_ASSERTION_CHECK:
 			err = _("window functions are not allowed in check constraints");
 			break;
 		case EXPR_KIND_COLUMN_DEFAULT:

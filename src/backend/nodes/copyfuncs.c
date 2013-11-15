@@ -3668,6 +3668,17 @@ _copyCreateSchemaStmt(const CreateSchemaStmt *from)
 	return newnode;
 }
 
+static CreateAssertionStmt *
+_copyCreateAssertionStmt(const CreateAssertionStmt *from)
+{
+	CreateAssertionStmt *newnode = makeNode(CreateAssertionStmt);
+
+	COPY_NODE_FIELD(assertion_name);
+	COPY_NODE_FIELD(constraint);
+
+	return newnode;
+}
+
 static CreateConversionStmt *
 _copyCreateConversionStmt(const CreateConversionStmt *from)
 {
@@ -4452,6 +4463,9 @@ copyObject(const void *from)
 			break;
 		case T_CreateSchemaStmt:
 			retval = _copyCreateSchemaStmt(from);
+			break;
+		case T_CreateAssertionStmt:
+			retval = _copyCreateAssertionStmt(from);
 			break;
 		case T_CreateConversionStmt:
 			retval = _copyCreateConversionStmt(from);

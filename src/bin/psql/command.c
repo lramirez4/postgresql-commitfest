@@ -358,6 +358,9 @@ exec_command(const char *cmd,
 			case 'a':
 				success = describeAggregates(pattern, show_verbose, show_system);
 				break;
+			case 'A':
+				success = describeAssertions(pattern);
+				break;
 			case 'b':
 				success = describeTablespaces(pattern, show_verbose);
 				break;

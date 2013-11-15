@@ -268,7 +268,20 @@ GRANT SELECT ON administrable_role_authorizations TO PUBLIC;
  * ASSERTIONS view
  */
 
--- feature not supported
+CREATE VIEW assertions AS
+    SELECT CAST(current_database() AS sql_identifier) AS constraint_catalog,
+           CAST(n.nspname AS sql_identifier) AS constraint_schema,
+           CAST(con.conname AS sql_identifier) AS constraint_name,
+           CAST(CASE WHEN condeferrable THEN 'YES' ELSE 'NO' END
+             AS yes_or_no) AS is_deferrable,
+           CAST(CASE WHEN condeferred THEN 'YES' ELSE 'NO' END
+             AS yes_or_no) AS initially_deferred
+    FROM pg_namespace n, pg_constraint con
+    WHERE n.oid = con.connamespace
+          AND con.conrelid = 0 AND con.contypid = 0;
+          -- TODO: AND pg_has_role(con.conowner, 'USAGE');
+
+GRANT SELECT ON assertions TO PUBLIC;
 
 
 /*

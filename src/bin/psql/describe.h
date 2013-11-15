@@ -12,6 +12,9 @@
 /* \da */
 extern bool describeAggregates(const char *pattern, bool verbose, bool showSystem);
 
+/* \dA */
+extern bool describeAssertions(const char *pattern);
+
 /* \db */
 extern bool describeTablespaces(const char *pattern, bool verbose);
 

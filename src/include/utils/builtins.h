@@ -1157,6 +1157,7 @@ extern Datum pg_identify_object(PG_FUNCTION_ARGS);
 
 /* commands/constraint.c */
 extern Datum unique_key_recheck(PG_FUNCTION_ARGS);
+extern Datum assertion_check(PG_FUNCTION_ARGS);
 
 /* commands/event_trigger.c */
 extern Datum pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS);

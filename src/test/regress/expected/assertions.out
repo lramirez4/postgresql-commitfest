@@ -1,0 +1,58 @@
+CREATE TABLE test1 (a int, b text);
+CREATE ASSERTION foo CHECK (1 < 2);
+CREATE ASSERTION wrong CHECK (1 + 2);
+ERROR:  argument of CHECK must be type boolean, not type integer
+CREATE ASSERTION wrong CHECK (a < 5);
+ERROR:  column "a" does not exist
+CREATE ASSERTION a2 CHECK ((SELECT count(*) FROM test1) < 5);
+CREATE ASSERTION wrong CHECK ((SELECT count(*) FROM wrong) < 5);
+ERROR:  relation "wrong" does not exist
+DELETE FROM test1;
+INSERT INTO test1 VALUES (1, 'one');
+INSERT INTO test1 VALUES (2, 'two');
+INSERT INTO test1 VALUES (3, 'three');
+INSERT INTO test1 VALUES (4, 'four');
+INSERT INTO test1 VALUES (5, 'five');
+ERROR:  assertion "a2" violated
+SELECT constraint_schema, constraint_name FROM information_schema.assertions ORDER BY 1, 2;
+ constraint_schema | constraint_name 
+-------------------+-----------------
+ public            | a2
+ public            | foo
+(2 rows)
+
+\dA
+                        List of assertions
+ Schema | Name |             Definition             | Description 
+--------+------+------------------------------------+-------------
+ public | a2   | CHECK ((( SELECT count(*) AS count+| 
+        |      |    FROM test1)) < 5)               | 
+ public | foo  | CHECK (1 < 2)                      | 
+(2 rows)
+
+ALTER ASSERTION a2 RENAME TO a3;
+ALTER ASSERTION foo RENAME TO a3; -- fails
+ERROR:  assertion "a3" already exists
+ALTER ASSERTION wrong RENAME TO wrong2; -- fails
+ERROR:  assertion "wrong" does not exist
+SELECT constraint_schema, constraint_name FROM information_schema.assertions ORDER BY 1, 2;
+ constraint_schema | constraint_name 
+-------------------+-----------------
+ public            | a3
+ public            | foo
+(2 rows)
+
+DROP ASSERTION foo;
+DROP ASSERTION wrong;
+ERROR:  assertion "wrong" does not exist
+DROP TABLE test1; -- fails
+ERROR:  cannot drop table test1 because other objects depend on it
+DETAIL:  constraint a3 depends on table test1
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP TABLE test1 CASCADE;
+NOTICE:  drop cascades to constraint a3
+SELECT constraint_schema, constraint_name FROM information_schema.assertions ORDER BY 1, 2;
+ constraint_schema | constraint_name 
+-------------------+-----------------
+(0 rows)
+

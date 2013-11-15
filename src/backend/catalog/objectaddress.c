@@ -547,6 +547,11 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 											missing_ok, -1);
 				address.objectSubId = 0;
 				break;
+			case OBJECT_ASSERTION:
+				address.classId = ConstraintRelationId;
+				address.objectId = get_assertion_oid(objname, missing_ok);
+				address.objectSubId = 0;
+				break;
 			case OBJECT_COLLATION:
 				address.classId = CollationRelationId;
 				address.objectId = get_collation_oid(objname, missing_ok);
@@ -1162,6 +1167,11 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_SCHEMA:
 			if (!pg_namespace_ownercheck(address.objectId, roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_NAMESPACE,
+							   NameListToString(objname));
+			break;
+		case OBJECT_ASSERTION:
+			if (!pg_constraint_ownercheck(address.objectId, roleid))
+				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_CONSTRAINT,
 							   NameListToString(objname));
 			break;
 		case OBJECT_COLLATION:

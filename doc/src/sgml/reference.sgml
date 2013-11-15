@@ -35,6 +35,7 @@
 
    &abort;
    &alterAggregate;
+   &alterAssertion;
    &alterCollation;
    &alterConversion;
    &alterDatabase;
@@ -79,6 +80,7 @@
    &commitPrepared;
    &copyTable;
    &createAggregate;
+   &createAssertion;
    &createCast;
    &createCollation;
    &createConversion;
@@ -119,6 +121,7 @@
    &discard;
    &do;
    &dropAggregate;
+   &dropAssertion;
    &dropCast;
    &dropCollation;
    &dropConversion;

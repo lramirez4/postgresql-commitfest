@@ -57,6 +57,7 @@ typedef enum ParseExprKind
 	EXPR_KIND_VALUES,			/* VALUES */
 	EXPR_KIND_CHECK_CONSTRAINT, /* CHECK constraint for a table */
 	EXPR_KIND_DOMAIN_CHECK,		/* CHECK constraint for a domain */
+	EXPR_KIND_ASSERTION_CHECK,	/* CHECK constraint in assertion */
 	EXPR_KIND_COLUMN_DEFAULT,	/* default value for a table column */
 	EXPR_KIND_FUNCTION_DEFAULT, /* default parameter value for function */
 	EXPR_KIND_INDEX_EXPRESSION, /* index expression */

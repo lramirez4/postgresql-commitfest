@@ -247,6 +247,21 @@ static const SchemaQuery Query_for_list_of_aggregates = {
 	NULL
 };
 
+static const SchemaQuery Query_for_list_of_assertions = {
+	/* catname */
+	"pg_catalog.pg_constraint c",
+	/* selcondition */
+	"(c.conrelid = 0 AND c.contypid = 0)",
+	/* viscondition */
+	"TRUE", //TODO: "pg_catalog.pg_constraint_is_visible(c.oid)",
+	/* namespace */
+	"c.connamespace",
+	/* result */
+	"pg_catalog.quote_ident(c.conname)",
+	/* qualresult */
+	NULL
+};
+
 static const SchemaQuery Query_for_list_of_datatypes = {
 	/* catname */
 	"pg_catalog.pg_type t",
@@ -727,6 +742,7 @@ typedef struct
 
 static const pgsql_thing_t words_after_create[] = {
 	{"AGGREGATE", NULL, &Query_for_list_of_aggregates},
+	{"ASSERTION", NULL, &Query_for_list_of_assertions},
 	{"CAST", NULL, NULL},		/* Casts have complex structures for names, so
 								 * skip it */
 	{"COLLATION", "SELECT pg_catalog.quote_ident(collname) FROM pg_catalog.pg_collation WHERE collencoding IN (-1, pg_catalog.pg_char_to_encoding(pg_catalog.getdatabaseencoding())) AND substring(pg_catalog.quote_ident(collname),1,%d)='%s'"},
@@ -857,7 +873,7 @@ psql_completion(char *text, int start, int end)
 
 	static const char *const backslash_commands[] = {
 		"\\a", "\\connect", "\\conninfo", "\\C", "\\cd", "\\copy", "\\copyright",
-		"\\d", "\\da", "\\db", "\\dc", "\\dC", "\\dd", "\\dD", "\\des", "\\det", "\\deu", "\\dew", "\\df",
+		"\\d", "\\da", "\\dA", "\\db", "\\dc", "\\dC", "\\dd", "\\dD", "\\des", "\\det", "\\deu", "\\dew", "\\df",
 		"\\dF", "\\dFd", "\\dFp", "\\dFt", "\\dg", "\\di", "\\dl", "\\dL",
 		"\\dn", "\\do", "\\dp", "\\drds", "\\ds", "\\dS", "\\dt", "\\dT", "\\dv", "\\du", "\\dx",
 		"\\e", "\\echo", "\\ef", "\\encoding",
@@ -927,7 +943,7 @@ psql_completion(char *text, int start, int end)
 			 pg_strcasecmp(prev3_wd, "TABLE") != 0)
 	{
 		static const char *const list_ALTER[] =
-		{"AGGREGATE", "COLLATION", "CONVERSION", "DATABASE", "DEFAULT PRIVILEGES", "DOMAIN",
+		{"AGGREGATE", "ASSERTION", "COLLATION", "CONVERSION", "DATABASE", "DEFAULT PRIVILEGES", "DOMAIN",
 			"EXTENSION", "FOREIGN DATA WRAPPER", "FOREIGN TABLE", "FUNCTION",
 			"GROUP", "INDEX", "LANGUAGE", "LARGE OBJECT", "MATERIALIZED VIEW", "OPERATOR",
 			"ROLE", "RULE", "SCHEMA", "SERVER", "SEQUENCE", "TABLE",
@@ -963,6 +979,16 @@ psql_completion(char *text, int start, int end)
 	{
 		static const char *const list_ALTERGEN[] =
 		{"OWNER TO", "RENAME TO", NULL};
+
+		COMPLETE_WITH_LIST(list_ALTERGEN);
+	}
+
+	/* ALTER ASSERTION <name> */
+	else if (pg_strcasecmp(prev3_wd, "ALTER") == 0 &&
+			 pg_strcasecmp(prev2_wd, "ASSERTION") == 0)
+	{
+		static const char *const list_ALTERGEN[] =
+		{"OWNER TO", "RENAME TO", "SET SCHEMA", NULL};
 
 		COMPLETE_WITH_LIST(list_ALTERGEN);
 	}
@@ -2398,7 +2424,8 @@ psql_completion(char *text, int start, int end)
 
 	/* DROP object with CASCADE / RESTRICT */
 	else if ((pg_strcasecmp(prev3_wd, "DROP") == 0 &&
-			  (pg_strcasecmp(prev2_wd, "COLLATION") == 0 ||
+			  (pg_strcasecmp(prev2_wd, "ASSERTION") == 0 ||
+			   pg_strcasecmp(prev2_wd, "COLLATION") == 0 ||
 			   pg_strcasecmp(prev2_wd, "CONVERSION") == 0 ||
 			   pg_strcasecmp(prev2_wd, "DOMAIN") == 0 ||
 			   pg_strcasecmp(prev2_wd, "EXTENSION") == 0 ||
@@ -3271,6 +3298,8 @@ psql_completion(char *text, int start, int end)
 
 	else if (strncmp(prev_wd, "\\da", strlen("\\da")) == 0)
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_aggregates, NULL);
+	else if (strncmp(prev_wd, "\\dA", strlen("\\dA")) == 0)
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_assertions, NULL);
 	else if (strncmp(prev_wd, "\\db", strlen("\\db")) == 0)
 		COMPLETE_WITH_QUERY(Query_for_list_of_tablespaces);
 	else if (strncmp(prev_wd, "\\dD", strlen("\\dD")) == 0)

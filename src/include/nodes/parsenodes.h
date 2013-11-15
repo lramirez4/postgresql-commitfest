@@ -1157,6 +1157,7 @@ typedef struct SetOperationStmt
 typedef enum ObjectType
 {
 	OBJECT_AGGREGATE,
+	OBJECT_ASSERTION,
 	OBJECT_ATTRIBUTE,			/* type's attribute, when distinct from column */
 	OBJECT_CAST,
 	OBJECT_COLUMN,
@@ -2597,6 +2598,17 @@ typedef struct ReindexStmt
 	bool		do_system;		/* include system tables in database case */
 	bool		do_user;		/* include user tables in database case */
 } ReindexStmt;
+
+/* ----------------------
+ *		CREATE ASSERTION Statement
+ * ----------------------
+ */
+typedef struct CreateAssertionStmt
+{
+	NodeTag		type;
+	List	   *assertion_name;
+	Constraint *constraint;
+} CreateAssertionStmt;
 
 /* ----------------------
  *		CREATE CONVERSION Statement
