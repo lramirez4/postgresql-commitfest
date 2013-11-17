@@ -77,6 +77,8 @@ wal_level_str(WalLevel wal_level)
 			return "archive";
 		case WAL_LEVEL_HOT_STANDBY:
 			return "hot_standby";
+		case WAL_LEVEL_ALL:
+			return "all";
 	}
 	return _("unrecognized wal_level");
 }
