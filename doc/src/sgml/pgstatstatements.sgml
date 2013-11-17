@@ -61,7 +61,7 @@
       <entry><structfield>query</structfield></entry>
       <entry><type>text</type></entry>
       <entry></entry>
-      <entry>Text of a representative statement (up to <xref linkend="guc-track-activity-query-size"> bytes)</entry>
+      <entry>Text of a representative statement</entry>
      </row>
 
      <row>
@@ -333,10 +333,9 @@
   </variablelist>
 
   <para>
-   The module requires additional shared memory amounting to about
-   <varname>pg_stat_statements.max</varname> <literal>*</>
-   <xref linkend="guc-track-activity-query-size"> bytes.  Note that this
-   memory is consumed whenever the module is loaded, even if
+   The module requires additional shared memory proportional to
+   <varname>pg_stat_statements.max</varname>.  Note that this memory
+   is consumed whenever the module is loaded, even if
    <varname>pg_stat_statements.track</> is set to <literal>none</>.
   </para>
 
