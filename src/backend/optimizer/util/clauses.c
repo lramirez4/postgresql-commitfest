@@ -111,6 +111,7 @@ static Expr *simplify_function(Oid funcid,
 				  Oid result_type, int32 result_typmod,
 				  Oid result_collid, Oid input_collid, List **args_p,
 				  bool funcvariadic, bool process_args, bool allow_non_const,
+				  FuncExpr *orig_funcexpr,
 				  eval_const_expressions_context *context);
 static List *expand_function_arguments(List *args, Oid result_type,
 						  HeapTuple func_tuple);
@@ -2359,6 +2360,7 @@ eval_const_expressions_mutator(Node *node,
 										   expr->funcvariadic,
 										   true,
 										   true,
+										   expr,
 										   context);
 				if (simple)		/* successfully simplified it */
 					return (Node *) simple;
@@ -2378,6 +2380,10 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->funccollid = expr->funccollid;
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
+				newexpr->funccolnames = expr->funccolnames;
+				newexpr->funccoltypes = expr->funccoltypes;
+				newexpr->funccoltypmods = expr->funccoltypmods;
+				newexpr->funccolcollations = expr->funccolcollations;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
 			}
@@ -2406,6 +2412,7 @@ eval_const_expressions_mutator(Node *node,
 										   false,
 										   true,
 										   true,
+										   NULL,
 										   context);
 				if (simple)		/* successfully simplified it */
 					return (Node *) simple;
@@ -2510,6 +2517,7 @@ eval_const_expressions_mutator(Node *node,
 											   false,
 											   false,
 											   false,
+											   NULL,
 											   context);
 					if (simple) /* successfully simplified it */
 					{
@@ -2714,6 +2722,7 @@ eval_const_expressions_mutator(Node *node,
 										   false,
 										   true,
 										   true,
+										   NULL,
 										   context);
 				if (simple)		/* successfully simplified output fn */
 				{
@@ -2746,6 +2755,7 @@ eval_const_expressions_mutator(Node *node,
 											   false,
 											   false,
 											   true,
+											   NULL,
 											   context);
 					if (simple) /* successfully simplified input fn */
 						return (Node *) simple;
@@ -3597,7 +3607,10 @@ simplify_boolean_equality(Oid opno, List *args)
  * polymorphic functions), result typmod, result collation, the input
  * collation to use for the function, the original argument list (not
  * const-simplified yet, unless process_args is false), and some flags;
- * also the context data for eval_const_expressions.
+ * also the context data for eval_const_expressions. The original funcexpr,
+ * if there was one, is passed in too so that fields of FuncExpr which are
+ * not interesting for simplification are nonetheless available to the
+ * transform function; currently that applies to the coldef list fields.
  *
  * Returns a simplified expression if successful, or NULL if cannot
  * simplify the function call.
@@ -3614,6 +3627,7 @@ static Expr *
 simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 				  Oid result_collid, Oid input_collid, List **args_p,
 				  bool funcvariadic, bool process_args, bool allow_non_const,
+				  FuncExpr *orig_funcexpr,
 				  eval_const_expressions_context *context)
 {
 	List	   *args = *args_p;
@@ -3679,6 +3693,20 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 		fexpr.funccollid = result_collid;
 		fexpr.inputcollid = input_collid;
 		fexpr.args = args;
+		if (orig_funcexpr)
+		{
+			fexpr.funccolnames = orig_funcexpr->funccolnames;
+			fexpr.funccoltypes = orig_funcexpr->funccoltypes;
+			fexpr.funccoltypmods = orig_funcexpr->funccoltypmods;
+			fexpr.funccolcollations = orig_funcexpr->funccolcollations;
+		}
+		else
+		{
+			fexpr.funccolnames = NIL;
+			fexpr.funccoltypes = NIL;
+			fexpr.funccoltypmods = NIL;
+			fexpr.funccolcollations = NIL;
+		}
 		fexpr.location = -1;
 
 		newexpr = (Expr *)
@@ -4541,10 +4569,12 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	if (rte->funcordinality)
 		return NULL;
 
-	/* Fail if FROM item isn't a simple FuncExpr */
-	fexpr = (FuncExpr *) rte->funcexpr;
-	if (fexpr == NULL || !IsA(fexpr, FuncExpr))
+	/* Fail if FROM item isn't a simple, single, FuncExpr */
+	if (list_length(rte->funcexprs) != 1
+		|| !IsA(linitial(rte->funcexprs), FuncExpr))
 		return NULL;
+
+	fexpr = (FuncExpr *) linitial(rte->funcexprs);
 
 	func_oid = fexpr->funcid;
 
@@ -4726,15 +4756,15 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 
 	/*
 	 * If it returns RECORD, we have to check against the column type list
-	 * provided in the RTE; check_sql_fn_retval can't do that.  (If no match,
-	 * we just fail to inline, rather than complaining; see notes for
-	 * tlist_matches_coltypelist.)	We don't have to do this for functions
-	 * with declared OUT parameters, even though their funcresulttype is
-	 * RECORDOID, so check get_func_result_type too.
+	 * provided in the FuncExpr (used to be in the RTE); check_sql_fn_retval
+	 * can't do that.  (If no match, we just fail to inline, rather than
+	 * complaining; see notes for tlist_matches_coltypelist.) We don't have to
+	 * do this for functions with declared OUT parameters, even though their
+	 * funcresulttype is RECORDOID, so check get_func_result_type too.
 	 */
 	if (fexpr->funcresulttype == RECORDOID &&
 		get_func_result_type(func_oid, NULL, NULL) == TYPEFUNC_RECORD &&
-		!tlist_matches_coltypelist(querytree->targetList, rte->funccoltypes))
+	  !tlist_matches_coltypelist(querytree->targetList, fexpr->funccoltypes))
 		goto fail;
 
 	/*

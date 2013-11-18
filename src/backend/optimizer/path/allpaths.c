@@ -37,6 +37,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "catalog/pg_opfamily.h"
 
 
 /* These parameters are set by GUC */
@@ -1258,6 +1259,7 @@ static void
 set_function_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
 	Relids		required_outer;
+	List	   *pathkeys = NIL;
 
 	/*
 	 * We don't support pushing join clauses into the quals of a function
@@ -1266,8 +1268,58 @@ set_function_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	 */
 	required_outer = rel->lateral_relids;
 
+	/*
+	 * The result is treated as unordered unless ORDINALITY was used, in which
+	 * case it is ordered by the ordinal column (last).
+	 */
+	if (rte->funcordinality)
+	{
+		ListCell   *lc;
+		Var		   *var = NULL;
+		AttrNumber	ordattno = list_length(rte->eref->colnames);
+
+		/*
+		 * Find corresponding Var in our tlist by searching for matching
+		 * attno.
+		 */
+
+		foreach(lc, rel->reltargetlist)
+		{
+			Var		   *node = lfirst(lc);
+
+			if (IsA(node, Var)
+				&&node->varno == rel->relid
+				&& node->varattno == ordattno
+				&& node->varlevelsup == 0)
+			{
+				var = node;
+				break;
+			}
+		}
+
+		/*
+		 * The Var might not be found in the tlist, but that should only
+		 * happen if the ordinality column is never referenced anywhere in the
+		 * query - in which case nobody can possibly care about the ordering
+		 * of it. So just leave the pathkeys NIL in that case.
+		 *
+		 * Also, build_expression_pathkey will only build the pathkey if
+		 * there's already an equivalence class; if there isn't, it indicates
+		 * that nothing cares about the ordering.
+		 */
+
+		if (var)
+		{
+			Oid			opno = get_opfamily_member(INTEGER_BTREE_FAM_OID,
+												   var->vartype, var->vartype,
+												   BTLessStrategyNumber);
+
+			pathkeys = build_expression_pathkey(root, rel, (Expr *) var, opno, false);
+		}
+	}
+
 	/* Generate appropriate path */
-	add_path(rel, create_functionscan_path(root, rel, required_outer));
+	add_path(rel, create_functionscan_path(root, rel, pathkeys, required_outer));
 
 	/* Select cheapest path (pretty easy in this case...) */
 	set_cheapest(rel);

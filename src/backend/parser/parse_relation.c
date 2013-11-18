@@ -27,6 +27,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_type.h"
+#include "parser/parse_target.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -43,7 +44,7 @@ static void expandRelation(Oid relid, Alias *eref,
 			   int rtindex, int sublevels_up,
 			   int location, bool include_dropped,
 			   List **colnames, List **colvars);
-static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
+static void expandTupleDesc(TupleDesc tupdesc, Alias *eref, int atts_done,
 				int rtindex, int sublevels_up,
 				int location, bool include_dropped,
 				List **colnames, List **colvars);
@@ -880,7 +881,7 @@ buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref, bool ordinali
 	/* tack on the ordinality column at the end */
 	if (ordinality)
 	{
-		Value *attrname;
+		Value	   *attrname;
 
 		if (aliaslc)
 		{
@@ -912,22 +913,30 @@ buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref, bool ordinali
  *		when the function returns a scalar type (not composite or RECORD).
  *
  * funcexpr: transformed expression tree for the function call
- * funcname: function name (used only for error message)
+ * funcname: function name
+ * prefer_funcname:  prefer to use funcname rather than eref->aliasname
  * alias: the user-supplied alias, or NULL if none
  * eref: the eref Alias to store column names in
  * ordinality: whether to add an ordinality column
  *
  * eref->colnames is filled in.
  *
- * The caller must have previously filled in eref->aliasname, which will
- * be used as the result column name if no alias is given.
+ * The caller must have previously filled in eref->aliasname, which will be
+ * used as the result column name if no column alias is given, no column name
+ * is provided by the function, and prefer_funcname is false. (This makes FROM
+ * func() AS foo use "foo" as the column name as well as the table alias.)
+ *
+ * prefer_funcname is true for the TABLE(func()) case, where calling the
+ * resulting column "table" would be silly, and using the function name as
+ * eref->aliasname would be inconsistent with TABLE(func1(),func2()).  This
+ * isn't ideal, but seems to be the least surprising behaviour.
  *
  * A user-supplied Alias can contain up to two column alias names; one for
  * the function result, and one for the ordinality column; it is an error
  * to specify more aliases than required.
  */
 static void
-buildScalarFunctionAlias(Node *funcexpr, char *funcname,
+buildScalarFunctionAlias(Node *funcexpr, char *funcname, bool prefer_funcname,
 						 Alias *alias, Alias *eref, bool ordinality)
 {
 	Assert(eref->colnames == NIL);
@@ -959,12 +968,15 @@ buildScalarFunctionAlias(Node *funcexpr, char *funcname,
 		 * caller (which is not necessarily the function name!)
 		 */
 		if (!pname)
-			pname = eref->aliasname;
+			pname = (prefer_funcname ? funcname : eref->aliasname);
 
 		eref->colnames = list_make1(makeString(pname));
 	}
 
-	/* If we don't have a name for the ordinality column yet, supply a default. */
+	/*
+	 * If we don't have a name for the ordinality column yet, supply a
+	 * default.
+	 */
 	if (ordinality && list_length(eref->colnames) < 2)
 		eref->colnames = lappend(eref->colnames, makeString(pstrdup("ordinality")));
 
@@ -1230,14 +1242,15 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 }
 
 /*
- * Add an entry for a function to the pstate's range table (p_rtable).
+ * Add an entry for a function (or functions) to the pstate's range table
+ * (p_rtable).
  *
  * This is just like addRangeTableEntry() except that it makes a function RTE.
  */
 RangeTblEntry *
 addRangeTableEntryForFunction(ParseState *pstate,
-							  char *funcname,
-							  Node *funcexpr,
+							  List *funcnames,
+							  List *funcexprs,
 							  RangeFunction *rangefunc,
 							  bool lateral,
 							  bool inFromCl)
@@ -1247,47 +1260,161 @@ addRangeTableEntryForFunction(ParseState *pstate,
 	Oid			funcrettype;
 	TupleDesc	tupdesc;
 	Alias	   *alias = rangefunc->alias;
-	List	   *coldeflist = rangefunc->coldeflist;
 	Alias	   *eref;
+	char	   *aliasname;
+	Oid		   *funcrettypes = NULL;
+	TupleDesc  *functupdescs = NULL;
+	int			nfuncs = list_length(funcexprs);
+	ListCell   *lc,
+			   *lc2;
+	int			i;
+	int			j;
+	int			natts;
 
 	rte->rtekind = RTE_FUNCTION;
 	rte->relid = InvalidOid;
 	rte->subquery = NULL;
-	rte->funcexpr = funcexpr;
-	rte->funccoltypes = NIL;
-	rte->funccoltypmods = NIL;
-	rte->funccolcollations = NIL;
+	rte->funcexprs = funcexprs;
 	rte->alias = alias;
 
-	eref = makeAlias(alias ? alias->aliasname : funcname, NIL);
+	/*----------
+	 * Choose the RTE alias name.
+	 *
+	 * We punt to "table" if the list results from explicit TABLE() syntax
+	 * regardless of number of functions.  Otherwise, use the first function,
+	 * since either there is only one, or it was an unnest() which got
+	 * expanded.  We don't currently need to record this fact in the
+	 * transformed node, since deparse always emits an alias for table
+	 * functions, and
+	 *    ... FROM unnest(a,b)
+	 * and
+	 *    ... FROM TABLE(unnest(a),unnest(b)) AS "unnest"
+	 * are equivalent enough for our purposes.
+	 *----------
+	 */
+	if (alias)
+		aliasname = alias->aliasname;
+	else if (rangefunc->is_table)
+		aliasname = "table";
+	else
+		aliasname = strVal(linitial(funcnames));
+
+	eref = makeAlias(aliasname, NIL);
 	rte->eref = eref;
 
 	/*
 	 * Now determine if the function returns a simple or composite type.
+	 *
+	 * If there's more than one function, the result must be composite, and we
+	 * have to produce a merged tupdesc.
 	 */
-	functypclass = get_expr_result_type(funcexpr,
-										&funcrettype,
-										&tupdesc);
+	if (nfuncs == 1)
+	{
+		functypclass = get_expr_result_type(linitial(funcexprs),
+											&funcrettype,
+											&tupdesc);
 
-	/*
-	 * A coldeflist is required if the function returns RECORD and hasn't got
-	 * a predetermined record type, and is prohibited otherwise.
-	 */
-	if (coldeflist != NIL)
-	{
-		if (functypclass != TYPEFUNC_RECORD)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("a column definition list is only allowed for functions returning \"record\""),
-					 parser_errposition(pstate, exprLocation(funcexpr))));
-	}
-	else
-	{
+		/*
+		 * TYPEFUNC_RECORD is only possible here if a column definition list
+		 * was not supplied.
+		 */
 		if (functypclass == TYPEFUNC_RECORD)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("a column definition list is required for functions returning \"record\""),
-					 parser_errposition(pstate, exprLocation(funcexpr))));
+			 parser_errposition(pstate, exprLocation(linitial(funcexprs)))));
+	}
+	else
+	{
+		/*
+		 * Produce a flattened TupleDesc with all the constituent columns from
+		 * all functions. We're only going to use this for assigning aliases,
+		 * so we don't need collations and so on.
+		 *
+		 * This would be less painful if there was a reasonable way to insert
+		 * dropped columns into a tupdesc.
+		 */
+
+		funcrettypes = palloc(nfuncs * sizeof(Oid));
+		functupdescs = palloc(nfuncs * sizeof(TupleDesc));
+
+		i = 0;
+		natts = 0;
+		forboth(lc, funcexprs, lc2, funcnames)
+		{
+			functypclass = get_expr_result_type(lfirst(lc),
+												&funcrettypes[i],
+												&functupdescs[i]);
+
+			switch (functypclass)
+			{
+				case TYPEFUNC_RECORD:
+
+					/*
+					 * Only gets here if no column definition list was
+					 * supplied for a function returning an unspecified
+					 * RECORD.
+					 */
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("a column definition list is required for functions returning \"record\""),
+					  parser_errposition(pstate, exprLocation(lfirst(lc)))));
+
+				case TYPEFUNC_SCALAR:
+					{
+						FuncExpr   *funcexpr = lfirst(lc);
+						char	   *pname = NULL;
+
+						/*
+						 * Function might have its own idea what the result
+						 * column name should be. Prefer that (since
+						 * buildScalarFunctionAlias does too)
+						 */
+						if (IsA(funcexpr, FuncExpr))
+							pname = get_func_result_name(funcexpr->funcid);
+
+						/*
+						 * If not, use the function name as the column name.
+						 */
+						if (!pname)
+							pname = strVal(lfirst(lc2));
+
+						functupdescs[i] = CreateTemplateTupleDesc(1, false);
+						TupleDescInitEntry(functupdescs[i],
+										   (AttrNumber) 1,
+										   pname,
+										   funcrettypes[i],
+										   -1,
+										   0);
+						break;
+					}
+
+				case TYPEFUNC_COMPOSITE:
+					break;
+
+				default:
+					ereport(ERROR,
+							(errcode(ERRCODE_DATATYPE_MISMATCH),
+							 errmsg("function \"%s\" in FROM has unsupported return type %s",
+						   strVal(lfirst(lc2)), format_type_be(funcrettype)),
+					  parser_errposition(pstate, exprLocation(lfirst(lc)))));
+			}
+			natts += functupdescs[i]->natts;
+
+			i++;
+		}
+
+		functypclass = TYPEFUNC_COMPOSITE;
+		funcrettype = RECORDOID;
+
+		/* Merge the tuple descs of each function into a composite one */
+		tupdesc = CreateTemplateTupleDesc(natts, false);
+		natts = 0;
+		for (i = 0; i < nfuncs; i++)
+		{
+			for (j = 1; j <= functupdescs[i]->natts; j++)
+				TupleDescCopyEntry(tupdesc, ++natts, functupdescs[i], j);
+		}
 	}
 
 	if (functypclass == TYPEFUNC_COMPOSITE)
@@ -1300,52 +1427,16 @@ addRangeTableEntryForFunction(ParseState *pstate,
 	else if (functypclass == TYPEFUNC_SCALAR)
 	{
 		/* Base data type, i.e. scalar */
-		buildScalarFunctionAlias(funcexpr, funcname, alias, eref, rangefunc->ordinality);
-	}
-	else if (functypclass == TYPEFUNC_RECORD)
-	{
-		ListCell   *col;
-
-		if (rangefunc->ordinality)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("WITH ORDINALITY is not supported for functions returning \"record\""),
-					 parser_errposition(pstate, exprLocation(funcexpr))));
-
-		/*
-		 * Use the column definition list to form the alias list and
-		 * funccoltypes/funccoltypmods/funccolcollations lists.
-		 */
-		foreach(col, coldeflist)
-		{
-			ColumnDef  *n = (ColumnDef *) lfirst(col);
-			char	   *attrname;
-			Oid			attrtype;
-			int32		attrtypmod;
-			Oid			attrcollation;
-
-			attrname = pstrdup(n->colname);
-			if (n->typeName->setof)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-						 errmsg("column \"%s\" cannot be declared SETOF",
-								attrname),
-						 parser_errposition(pstate, n->typeName->location)));
-			typenameTypeIdAndMod(pstate, n->typeName, &attrtype, &attrtypmod);
-			attrcollation = GetColumnDefCollation(pstate, n, attrtype);
-			eref->colnames = lappend(eref->colnames, makeString(attrname));
-			rte->funccoltypes = lappend_oid(rte->funccoltypes, attrtype);
-			rte->funccoltypmods = lappend_int(rte->funccoltypmods, attrtypmod);
-			rte->funccolcollations = lappend_oid(rte->funccolcollations,
-												 attrcollation);
-		}
+		buildScalarFunctionAlias(linitial(funcexprs),
+							strVal(linitial(funcnames)), rangefunc->is_table,
+								 alias, eref, rangefunc->ordinality);
 	}
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 			 errmsg("function \"%s\" in FROM has unsupported return type %s",
-					funcname, format_type_be(funcrettype)),
-				 parser_errposition(pstate, exprLocation(funcexpr))));
+					strVal(linitial(funcnames)), format_type_be(funcrettype)),
+			 parser_errposition(pstate, exprLocation(linitial(funcexprs)))));
 
 	/*
 	 * Set flags and access permissions.
@@ -1783,104 +1874,83 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 				TypeFuncClass functypclass;
 				Oid			funcrettype;
 				TupleDesc	tupdesc;
-				int         ordinality_attno = 0;
+				int			atts_done = 0;
+				ListCell   *lc;
 
-				functypclass = get_expr_result_type(rte->funcexpr,
-													&funcrettype,
-													&tupdesc);
-				if (functypclass == TYPEFUNC_COMPOSITE)
+				/*
+				 * Loop over functions to assemble result.
+				 *
+				 * atts_done is the number of attributes (including dropped
+				 * cols) constructed so far; it's used as an index offset in
+				 * various places.
+				 */
+				foreach(lc, rte->funcexprs)
 				{
-					/* Composite data type, e.g. a table's row type */
-					Assert(tupdesc);
-
-					/*
-					 * we rely here on the fact that expandTupleDesc doesn't
-					 * care about being passed more aliases than it needs.
-					 */
-					expandTupleDesc(tupdesc, rte->eref,
-									rtindex, sublevels_up, location,
-									include_dropped, colnames, colvars);
-
-					ordinality_attno = tupdesc->natts + 1;
-				}
-				else if (functypclass == TYPEFUNC_SCALAR)
-				{
-					/* Base data type, i.e. scalar */
-					if (colnames)
-						*colnames = lappend(*colnames,
-											linitial(rte->eref->colnames));
-
-					if (colvars)
+					functypclass = get_expr_result_type(lfirst(lc),
+														&funcrettype,
+														&tupdesc);
+					if (functypclass == TYPEFUNC_COMPOSITE)
 					{
-						Var		   *varnode;
+						/* Composite data type, e.g. a table's row type */
+						Assert(tupdesc);
 
-						varnode = makeVar(rtindex, 1,
-										  funcrettype, -1,
-										  exprCollation(rte->funcexpr),
-										  sublevels_up);
-						varnode->location = location;
+						/*
+						 * we rely here on the fact that expandTupleDesc
+						 * doesn't care about being passed more aliases than
+						 * it needs.
+						 */
+						expandTupleDesc(tupdesc, rte->eref, atts_done,
+										rtindex, sublevels_up, location,
+										include_dropped, colnames, colvars);
 
-						*colvars = lappend(*colvars, varnode);
+						atts_done += tupdesc->natts;
 					}
-
-					ordinality_attno = 2;
-				}
-				else if (functypclass == TYPEFUNC_RECORD)
-				{
-					if (colnames)
-						*colnames = copyObject(rte->eref->colnames);
-					if (colvars)
+					else if (functypclass == TYPEFUNC_SCALAR)
 					{
-						ListCell   *l1;
-						ListCell   *l2;
-						ListCell   *l3;
-						int			attnum = 0;
+						/* Base data type, i.e. scalar */
+						if (colnames)
+							*colnames = lappend(*colnames,
+								   list_nth(rte->eref->colnames, atts_done));
 
-						forthree(l1, rte->funccoltypes,
-								 l2, rte->funccoltypmods,
-								 l3, rte->funccolcollations)
+						if (colvars)
 						{
-							Oid			attrtype = lfirst_oid(l1);
-							int32		attrtypmod = lfirst_int(l2);
-							Oid			attrcollation = lfirst_oid(l3);
 							Var		   *varnode;
 
-							attnum++;
-							varnode = makeVar(rtindex,
-											  attnum,
-											  attrtype,
-											  attrtypmod,
-											  attrcollation,
+							varnode = makeVar(rtindex, atts_done + 1,
+											  funcrettype, -1,
+											  exprCollation(lfirst(lc)),
 											  sublevels_up);
 							varnode->location = location;
+
 							*colvars = lappend(*colvars, varnode);
 						}
-					}
 
-					/* note, ordinality is not allowed in this case */
-				}
-				else
-				{
-					/* addRangeTableEntryForFunction should've caught this */
-					elog(ERROR, "function in FROM has unsupported return type");
+						++atts_done;
+					}
+					else
+					{
+						/* addRangeTableEntryForFunction should've caught this */
+						elog(ERROR, "function in FROM has unsupported return type");
+					}
 				}
 
 				/* tack on the extra ordinality column if present */
 				if (rte->funcordinality)
 				{
-					Assert(ordinality_attno > 0);
+					Assert(atts_done > 0);
 
 					if (colnames)
 						*colnames = lappend(*colnames, llast(rte->eref->colnames));
 
 					if (colvars)
 					{
-						Var *varnode = makeVar(rtindex,
-											   ordinality_attno,
-											   INT8OID,
-											   -1,
-											   InvalidOid,
-											   sublevels_up);
+						Var		   *varnode = makeVar(rtindex,
+													  atts_done + 1,
+													  INT8OID,
+													  -1,
+													  InvalidOid,
+													  sublevels_up);
+
 						*colvars = lappend(*colvars, varnode);
 					}
 				}
@@ -2051,7 +2121,7 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 
 	/* Get the tupledesc and turn it over to expandTupleDesc */
 	rel = relation_open(relid, AccessShareLock);
-	expandTupleDesc(rel->rd_att, eref, rtindex, sublevels_up,
+	expandTupleDesc(rel->rd_att, eref, 0, rtindex, sublevels_up,
 					location, include_dropped,
 					colnames, colvars);
 	relation_close(rel, AccessShareLock);
@@ -2060,17 +2130,20 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 /*
  * expandTupleDesc -- expandRTE subroutine
  *
- * Only the required number of column names are used from the Alias;
- * it is not an error to supply too many. (ordinality depends on this)
+ * Only the required number of column names are used from the Alias; it is not
+ * an error to supply too many. (ordinality depends on this)
+ *
+ * atts_done offsets the resulting column numbers, for the function case when
+ * we merge multiple tupdescs into one list.
  */
 static void
-expandTupleDesc(TupleDesc tupdesc, Alias *eref,
+expandTupleDesc(TupleDesc tupdesc, Alias *eref, int atts_done,
 				int rtindex, int sublevels_up,
 				int location, bool include_dropped,
 				List **colnames, List **colvars)
 {
 	int			maxattrs = tupdesc->natts;
-	int			numaliases = list_length(eref->colnames);
+	int			numaliases = list_length(eref->colnames) - atts_done;
 	int			varattno;
 
 	for (varattno = 0; varattno < maxattrs; varattno++)
@@ -2101,7 +2174,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 			char	   *label;
 
 			if (varattno < numaliases)
-				label = strVal(list_nth(eref->colnames, varattno));
+				label = strVal(list_nth(eref->colnames, varattno + atts_done));
 			else
 				label = NameStr(attr->attname);
 			*colnames = lappend(*colnames, makeString(pstrdup(label)));
@@ -2111,7 +2184,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 		{
 			Var		   *varnode;
 
-			varnode = makeVar(rtindex, attr->attnum,
+			varnode = makeVar(rtindex, attr->attnum + atts_done,
 							  attr->atttypid, attr->atttypmod,
 							  attr->attcollation,
 							  sublevels_up);
@@ -2281,11 +2354,12 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 				TypeFuncClass functypclass;
 				Oid			funcrettype;
 				TupleDesc	tupdesc;
+				ListCell   *lc;
+				int			atts_done = 0;
 
 				/*
-				 * if ordinality, then a reference to the last column
-				 * in the name list must be referring to the
-				 * ordinality column
+				 * if ordinality, then a reference to the last column in the
+				 * name list must be referring to the ordinality column
 				 */
 				if (rte->funcordinality
 					&& attnum == list_length(rte->eref->colnames))
@@ -2296,61 +2370,72 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 					break;
 				}
 
-				functypclass = get_expr_result_type(rte->funcexpr,
-													&funcrettype,
-													&tupdesc);
-
-				if (functypclass == TYPEFUNC_COMPOSITE)
+				/*
+				 * Loop over funcs until we find the one that covers the
+				 * requested column.
+				 */
+				foreach(lc, rte->funcexprs)
 				{
-					/* Composite data type, e.g. a table's row type */
-					Form_pg_attribute att_tup;
+					functypclass = get_expr_result_type(lfirst(lc),
+														&funcrettype,
+														&tupdesc);
 
-					Assert(tupdesc);
+					if (functypclass == TYPEFUNC_COMPOSITE)
+					{
+						/* Composite data type, e.g. a table's row type */
+						Form_pg_attribute att_tup;
 
-					/* this is probably a can't-happen case */
-					if (attnum < 1 || attnum > tupdesc->natts)
-						ereport(ERROR,
-								(errcode(ERRCODE_UNDEFINED_COLUMN),
-						errmsg("column %d of relation \"%s\" does not exist",
-							   attnum,
-							   rte->eref->aliasname)));
+						Assert(tupdesc);
 
-					att_tup = tupdesc->attrs[attnum - 1];
+						if (attnum > atts_done
+							&& attnum <= atts_done + tupdesc->natts)
+						{
+							att_tup = tupdesc->attrs[attnum - atts_done - 1];
 
-					/*
-					 * If dropped column, pretend it ain't there.  See notes
-					 * in scanRTEForColumn.
-					 */
-					if (att_tup->attisdropped)
-						ereport(ERROR,
-								(errcode(ERRCODE_UNDEFINED_COLUMN),
-								 errmsg("column \"%s\" of relation \"%s\" does not exist",
-										NameStr(att_tup->attname),
-										rte->eref->aliasname)));
-					*vartype = att_tup->atttypid;
-					*vartypmod = att_tup->atttypmod;
-					*varcollid = att_tup->attcollation;
+							/*
+							 * If dropped column, pretend it ain't there.  See
+							 * notes in scanRTEForColumn.
+							 */
+							if (att_tup->attisdropped)
+								ereport(ERROR,
+										(errcode(ERRCODE_UNDEFINED_COLUMN),
+										 errmsg("column \"%s\" of relation \"%s\" does not exist",
+												NameStr(att_tup->attname),
+												rte->eref->aliasname)));
+							*vartype = att_tup->atttypid;
+							*vartypmod = att_tup->atttypmod;
+							*varcollid = att_tup->attcollation;
+							return;
+						}
+
+						atts_done += tupdesc->natts;
+					}
+					else if (functypclass == TYPEFUNC_SCALAR)
+					{
+						if (attnum == atts_done + 1)
+						{
+							/* Base data type, i.e. scalar */
+							*vartype = funcrettype;
+							*vartypmod = -1;
+							*varcollid = exprCollation(lfirst(lc));
+							return;
+						}
+
+						++atts_done;
+					}
+					else
+					{
+						/* addRangeTableEntryForFunction should've caught this */
+						elog(ERROR, "function in FROM has unsupported return type");
+					}
 				}
-				else if (functypclass == TYPEFUNC_SCALAR)
-				{
-					Assert(attnum == 1);
 
-					/* Base data type, i.e. scalar */
-					*vartype = funcrettype;
-					*vartypmod = -1;
-					*varcollid = exprCollation(rte->funcexpr);
-				}
-				else if (functypclass == TYPEFUNC_RECORD)
-				{
-					*vartype = list_nth_oid(rte->funccoltypes, attnum - 1);
-					*vartypmod = list_nth_int(rte->funccoltypmods, attnum - 1);
-					*varcollid = list_nth_oid(rte->funccolcollations, attnum - 1);
-				}
-				else
-				{
-					/* addRangeTableEntryForFunction should've caught this */
-					elog(ERROR, "function in FROM has unsupported return type");
-				}
+				/* this is probably a can't-happen case */
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("column %d of relation \"%s\" does not exist",
+								attnum,
+								rte->eref->aliasname)));
 			}
 			break;
 		case RTE_VALUES:
@@ -2456,45 +2541,67 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 		case RTE_FUNCTION:
 			{
 				/* Function RTE */
-				Oid			funcrettype = exprType(rte->funcexpr);
-				Oid			funcrelid = typeidTypeRelid(funcrettype);
+				TypeFuncClass functypclass;
+				Oid			funcrettype;
+				TupleDesc	tupdesc;
+				ListCell   *lc;
+				int			atts_done = 0;
+
+				result = false;
 
 				/*
-				 * if ordinality, then a reference to the last column
-				 * in the name list must be referring to the
-				 * ordinality column, which is not dropped
+				 * if ordinality, then a reference to the last column in the
+				 * name list must be referring to the ordinality column, which
+				 * is not dropped
 				 */
 				if (rte->funcordinality
 					&& attnum == list_length(rte->eref->colnames))
-				{
-					result = false;
-				}
-				else if (OidIsValid(funcrelid))
-				{
-					/*
-					 * Composite data type, i.e. a table's row type
-					 *
-					 * Same as ordinary relation RTE
-					 */
-					HeapTuple	tp;
-					Form_pg_attribute att_tup;
+					break;
 
-					tp = SearchSysCache2(ATTNUM,
-										 ObjectIdGetDatum(funcrelid),
-										 Int16GetDatum(attnum));
-					if (!HeapTupleIsValid(tp))	/* shouldn't happen */
-						elog(ERROR, "cache lookup failed for attribute %d of relation %u",
-							 attnum, funcrelid);
-					att_tup = (Form_pg_attribute) GETSTRUCT(tp);
-					result = att_tup->attisdropped;
-					ReleaseSysCache(tp);
-				}
-				else
+				/*
+				 * Loop over funcs until we find the one that covers the
+				 * requested column.
+				 */
+				foreach(lc, rte->funcexprs)
 				{
-					/*
-					 * Must be a base data type, i.e. scalar
-					 */
-					result = false;
+					functypclass = get_expr_result_type(lfirst(lc),
+														&funcrettype,
+														&tupdesc);
+
+					if (functypclass == TYPEFUNC_COMPOSITE)
+					{
+						/* Composite data type, e.g. a table's row type */
+						Form_pg_attribute att_tup;
+
+						Assert(tupdesc);
+
+						if (attnum > atts_done
+							&& attnum <= atts_done + tupdesc->natts)
+						{
+							att_tup = tupdesc->attrs[attnum - atts_done - 1];
+
+							result = att_tup->attisdropped;
+							break;
+						}
+
+						atts_done += tupdesc->natts;
+					}
+					else if (functypclass == TYPEFUNC_SCALAR)
+					{
+						if (attnum == atts_done + 1)
+						{
+							/* Base data type, i.e. scalar */
+							result = false;
+							break;
+						}
+
+						++atts_done;
+					}
+					else
+					{
+						/* addRangeTableEntryForFunction should've caught this */
+						elog(ERROR, "function in FROM has unsupported return type");
+					}
 				}
 			}
 			break;

@@ -127,9 +127,9 @@ makeVarFromTargetEntry(Index varno,
  * the function's result directly, instead of the single-column composite
  * value that the whole-row notation might otherwise suggest.
  *
- * We also handle the specific case of function RTEs with ordinality,
- * where the additional column has to be added. This forces the result
- * to be composite and RECORD type.
+ * We also handle the specific case of function RTEs with ordinality or
+ * multiple function calls. This forces the result to be composite and RECORD
+ * type.
  */
 Var *
 makeWholeRowVar(RangeTblEntry *rte,
@@ -157,23 +157,27 @@ makeWholeRowVar(RangeTblEntry *rte,
 			break;
 
 		case RTE_FUNCTION:
+
 			/*
-			 * RTE is a function with or without ordinality. We map the
-			 * cases as follows:
+			 * RTE is a function with or without ordinality. We map the cases
+			 * as follows:
 			 *
-			 * If ordinality is set, we return a composite var even if
-			 * the function is a scalar. This var is always of RECORD type.
+			 * If ordinality is set, we return a composite var even if the
+			 * function is a scalar. This var is always of RECORD type.
 			 *
-			 * If ordinality is not set but the function returns a row,
-			 * we keep the function's return type.
+			 * If the RTE has more than one function, we return a composite
+			 * var of record type.
+			 *
+			 * If ordinality is not set but the function returns a row, we
+			 * keep the function's return type.
 			 *
 			 * If the function is a scalar, we do what allowScalar requests.
 			 */
-			toid = exprType(rte->funcexpr);
+			toid = exprType(linitial(rte->funcexprs));
 
-			if (rte->funcordinality)
+			if (rte->funcordinality || list_length(rte->funcexprs) > 1)
 			{
-				/* ORDINALITY always produces an anonymous RECORD result */
+				/* always produces an anonymous RECORD result */
 				result = makeVar(varno,
 								 InvalidAttrNumber,
 								 RECORDOID,
@@ -198,7 +202,7 @@ makeWholeRowVar(RangeTblEntry *rte,
 								 1,
 								 toid,
 								 -1,
-								 exprCollation(rte->funcexpr),
+								 exprCollation(linitial(rte->funcexprs)),
 								 varlevelsup);
 			}
 			else
@@ -494,6 +498,10 @@ makeFuncExpr(Oid funcid, Oid rettype, List *args,
 	funcexpr->funccollid = funccollid;
 	funcexpr->inputcollid = inputcollid;
 	funcexpr->args = args;
+	funcexpr->funccolnames = NIL;
+	funcexpr->funccoltypes = NIL;
+	funcexpr->funccoltypmods = NIL;
+	funcexpr->funccolcollations = NIL;
 	funcexpr->location = -1;
 
 	return funcexpr;
@@ -549,7 +557,8 @@ makeDefElemExtended(char *nameSpace, char *name, Node *arg,
 FuncCall *
 makeFuncCall(List *name, List *args, int location)
 {
-	FuncCall *n = makeNode(FuncCall);
+	FuncCall   *n = makeNode(FuncCall);
+
 	n->funcname = name;
 	n->args = args;
 	n->location = location;
@@ -559,5 +568,6 @@ makeFuncCall(List *name, List *args, int location)
 	n->agg_distinct = FALSE;
 	n->func_variadic = FALSE;
 	n->over = NULL;
+	n->coldeflist = NULL;
 	return n;
 }

@@ -24,6 +24,7 @@
 #include "optimizer/tlist.h"
 #include "parser/analyze.h"
 #include "parser/parsetree.h"
+#include "parser/parser.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -515,18 +516,11 @@ transformRangeSubselect(ParseState *pstate, RangeSubselect *r)
 static RangeTblEntry *
 transformRangeFunction(ParseState *pstate, RangeFunction *r)
 {
-	Node	   *funcexpr;
-	char	   *funcname;
+	List	   *funcexprs = NIL;
+	List	   *funcnames = NIL;
 	bool		is_lateral;
 	RangeTblEntry *rte;
-
-	/*
-	 * Get function name for possible use as alias.  We use the same
-	 * transformation rules as for a SELECT output expression.	For a FuncCall
-	 * node, the result will be the function name, but it is possible for the
-	 * grammar to hand back other node types.
-	 */
-	funcname = FigureColname(r->funccallnode);
+	ListCell   *lc;
 
 	/*
 	 * We make lateral_only names of this level visible, whether or not the
@@ -541,45 +535,51 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 	pstate->p_lateral_active = true;
 
 	/*
-	 * Transform the raw expression.
+	 * Transform the raw expressions.
+	 *
+	 * While transforming, get function names for possible use as alias and
+	 * column names.  We use the same transformation rules as for a SELECT
+	 * output expression. For a FuncCall node, the result will be the function
+	 * name, but it is possible for the grammar to hand back other node types.
+	 *
+	 * Have to get this info now, because FigureColname only works on raw
+	 * parsetree. Actually deciding what to do with the names is left up to
+	 * addRangeTableEntryForFunction (which does not see the raw parsenodes).
 	 */
-	funcexpr = transformExpr(pstate, r->funccallnode, EXPR_KIND_FROM_FUNCTION);
+
+	foreach(lc, r->funccallnodes)
+	{
+		Node	   *node = lfirst(lc);
+
+		funcexprs = lappend(funcexprs,
+					   transformExpr(pstate, node, EXPR_KIND_FROM_FUNCTION));
+
+		funcnames = lappend(funcnames, makeString(FigureColname(node)));
+	}
 
 	pstate->p_lateral_active = false;
 
 	/*
-	 * We must assign collations now so that we can fill funccolcollations.
+	 * Assign collations now.
+	 *
+	 * This comment used to say that this was required to fill in
+	 * funccolcollations, but that does not appear to have been the case
+	 * (assignment of funccolcollations was since moved to the Expr handling
+	 * above)
 	 */
-	assign_expr_collations(pstate, funcexpr);
+	assign_list_collations(pstate, funcexprs);
 
 	/*
 	 * Mark the RTE as LATERAL if the user said LATERAL explicitly, or if
 	 * there are any lateral cross-references in it.
 	 */
-	is_lateral = r->lateral || contain_vars_of_level(funcexpr, 0);
+	is_lateral = r->lateral || contain_vars_of_level((Node *) funcexprs, 0);
 
 	/*
 	 * OK, build an RTE for the function.
 	 */
-	rte = addRangeTableEntryForFunction(pstate, funcname, funcexpr,
+	rte = addRangeTableEntryForFunction(pstate, funcnames, funcexprs,
 										r, is_lateral, true);
-
-	/*
-	 * If a coldeflist was supplied, ensure it defines a legal set of names
-	 * (no duplicates) and datatypes (no pseudo-types, for instance).
-	 * addRangeTableEntryForFunction looked up the type names but didn't check
-	 * them further than that.
-	 */
-	if (r->coldeflist)
-	{
-		TupleDesc	tupdesc;
-
-		tupdesc = BuildDescFromLists(rte->eref->colnames,
-									 rte->funccoltypes,
-									 rte->funccoltypmods,
-									 rte->funccolcollations);
-		CheckAttributeNamesTypes(tupdesc, RELKIND_COMPOSITE_TYPE, false);
-	}
 
 	return rte;
 }

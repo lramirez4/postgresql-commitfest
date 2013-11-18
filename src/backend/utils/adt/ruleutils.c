@@ -27,6 +27,7 @@
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_language.h"
+#include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
@@ -387,7 +388,7 @@ static void get_from_clause_item(Node *jtnode, Query *query,
 					 deparse_context *context);
 static void get_column_alias_list(deparse_columns *colinfo,
 					  deparse_context *context);
-static void get_from_clause_coldeflist(deparse_columns *colinfo,
+static void get_from_clause_coldeflist(deparse_columns *colinfo, List *names,
 						   List *types, List *typmods, List *collations,
 						   deparse_context *context);
 static void get_opclass_name(Oid opclass, Oid actual_datatype,
@@ -8013,6 +8014,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 		char	   *refname = get_rtable_name(varno, context);
 		deparse_columns *colinfo = deparse_columns_fetch(varno, dpns);
 		bool		printalias;
+		FuncExpr   *func_coldef = NULL;
 
 		if (rte->lateral)
 			appendStringInfoString(buf, "LATERAL ");
@@ -8037,7 +8039,101 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				break;
 			case RTE_FUNCTION:
 				/* Function RTE */
-				get_rule_expr(rte->funcexpr, context, true);
+
+				/*
+				 * The simple case of omitting TABLE() for one function only
+				 * works if either there's no ordinality, or the function does
+				 * not need a column definition list.
+				 */
+				if (list_length(rte->funcexprs) == 1
+					&& (!rte->funcordinality
+						|| !IsA(linitial(rte->funcexprs), FuncExpr)
+						||((FuncExpr *) linitial(rte->funcexprs))->funccoltypes == NIL))
+				{
+					get_rule_expr(linitial(rte->funcexprs), context, true);
+					func_coldef = linitial(rte->funcexprs);
+				}
+				else
+				{
+					ListCell   *lc = list_head(rte->funcexprs);
+					Oid			unnest_oid = InvalidOid;
+
+					/*
+					 * If all the function calls in the list are to
+					 * pg_catalog.unnest, then collapse the list back down to
+					 * UNNEST(args). Since there's currently only one unnest,
+					 * we check by oid after the first one.
+					 */
+
+					if (IsA(lfirst(lc), FuncExpr))
+					{
+						unnest_oid = ((FuncExpr *) lfirst(lc))->funcid;
+
+						if (get_func_namespace(unnest_oid) != PG_CATALOG_NAMESPACE
+						 || strcmp(get_func_name(unnest_oid), "unnest") != 0)
+							unnest_oid = InvalidOid;
+					}
+
+					while (OidIsValid(unnest_oid))
+					{
+						FuncExpr   *fn;
+
+						lc = lnext(lc);
+						if (!lc)
+							break;
+
+						fn = lfirst(lc);
+						if (!IsA(fn, FuncExpr)
+							||fn->funcid != unnest_oid
+							|| fn->funccoltypes != NIL)
+							unnest_oid = InvalidOid;
+					}
+
+					if (OidIsValid(unnest_oid))
+					{
+						List	   *allargs = NIL;
+
+						foreach(lc, rte->funcexprs)
+						{
+							List	   *args = ((FuncExpr *) lfirst(lc))->args;
+
+							allargs = list_concat(allargs, list_copy(args));
+						}
+
+						appendStringInfoString(buf, "unnest(");
+						get_rule_expr((Node *) allargs, context, true);
+					}
+					else
+					{
+						appendStringInfoString(buf, "TABLE(");
+
+						foreach(lc, rte->funcexprs)
+						{
+							FuncExpr   *fn = lfirst(lc);
+
+							get_rule_expr((Node *) fn, context, true);
+
+							if (IsA(fn, FuncExpr) &&fn->funccoltypes != NIL)
+							{
+								/*
+								 * Function returning RECORD, reconstruct the
+								 * columndefs
+								 */
+								appendStringInfoString(buf, " AS ");
+								get_from_clause_coldeflist(NULL,
+														   fn->funccolnames,
+														   fn->funccoltypes,
+														   fn->funccoltypmods,
+													   fn->funccolcollations,
+														   context);
+							}
+
+							if (lnext(lc))
+								appendStringInfoString(buf, ", ");
+						}
+					}
+					appendStringInfoChar(buf, ')');
+				}
 				if (rte->funcordinality)
 					appendStringInfoString(buf, " WITH ORDINALITY");
 				break;
@@ -8099,13 +8195,14 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 			appendStringInfo(buf, " %s", quote_identifier(refname));
 
 		/* Print the column definitions or aliases, if needed */
-		if (rte->rtekind == RTE_FUNCTION && rte->funccoltypes != NIL)
+		if (rte->rtekind == RTE_FUNCTION && func_coldef && func_coldef->funccoltypes != NIL)
 		{
 			/* Function returning RECORD, reconstruct the columndefs */
 			get_from_clause_coldeflist(colinfo,
-									   rte->funccoltypes,
-									   rte->funccoltypmods,
-									   rte->funccolcollations,
+									   NIL,
+									   func_coldef->funccoltypes,
+									   func_coldef->funccoltypmods,
+									   func_coldef->funccolcollations,
 									   context);
 		}
 		else
@@ -8254,7 +8351,7 @@ get_column_alias_list(deparse_columns *colinfo, deparse_context *context)
  * responsible for ensuring that an alias or AS is present before it.
  */
 static void
-get_from_clause_coldeflist(deparse_columns *colinfo,
+get_from_clause_coldeflist(deparse_columns *colinfo, List *names,
 						   List *types, List *typmods, List *collations,
 						   deparse_context *context)
 {
@@ -8262,6 +8359,7 @@ get_from_clause_coldeflist(deparse_columns *colinfo,
 	ListCell   *l1;
 	ListCell   *l2;
 	ListCell   *l3;
+	ListCell   *l4 = (names ? list_head(names) : NULL);
 	int			i;
 
 	appendStringInfoChar(buf, '(');
@@ -8269,7 +8367,7 @@ get_from_clause_coldeflist(deparse_columns *colinfo,
 	i = 0;
 	forthree(l1, types, l2, typmods, l3, collations)
 	{
-		char	   *attname = colinfo->colnames[i];
+		char	   *attname = (colinfo ? colinfo->colnames[i] : strVal(lfirst(l4)));
 		Oid			atttypid = lfirst_oid(l1);
 		int32		atttypmod = lfirst_int(l2);
 		Oid			attcollation = lfirst_oid(l3);
@@ -8285,6 +8383,9 @@ get_from_clause_coldeflist(deparse_columns *colinfo,
 			attcollation != get_typcollation(atttypid))
 			appendStringInfo(buf, " COLLATE %s",
 							 generate_collation_name(attcollation));
+
+		if (!colinfo)
+			l4 = lnext(l4);
 		i++;
 	}
 

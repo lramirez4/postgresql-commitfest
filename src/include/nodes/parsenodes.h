@@ -304,6 +304,7 @@ typedef struct FuncCall
 	bool		agg_distinct;	/* arguments were labeled DISTINCT */
 	bool		func_variadic;	/* last argument was labeled VARIADIC */
 	struct WindowDef *over;		/* OVER clause, if any */
+	List	   *coldeflist;		/* column definition list for record funcs */
 	int			location;		/* token location, or -1 if unknown */
 } FuncCall;
 
@@ -466,16 +467,18 @@ typedef struct RangeSubselect
 
 /*
  * RangeFunction - function call appearing in a FROM clause
+ *
+ * funccallnodes is a list because we use this to represent the construct
+ * TABLE(func1(...),func2(...),...) AS ...
  */
 typedef struct RangeFunction
 {
 	NodeTag		type;
 	bool		lateral;		/* does it have LATERAL prefix? */
 	bool		ordinality;		/* does it have WITH ORDINALITY suffix? */
-	Node	   *funccallnode;	/* untransformed function call tree */
+	bool		is_table;		/* result of TABLE() syntax */
+	List	   *funccallnodes;	/* untransformed function call trees */
 	Alias	   *alias;			/* table alias & optional column aliases */
-	List	   *coldeflist;		/* list of ColumnDef nodes to describe result
-								 * of function returning RECORD */
 } RangeFunction;
 
 /*
@@ -653,12 +656,12 @@ typedef struct XmlSerialize
  *	  colnames for columns dropped since the rule was created (and for that
  *	  matter the colnames might be out of date due to column renamings).
  *
- *	  The same comments apply to FUNCTION RTEs when the function's return type
+ *	  The same comments apply to FUNCTION RTEs when a function's return type
  *	  is a named composite type. In addition, for all return types, FUNCTION
- *    RTEs with ORDINALITY must always have the last colname entry being the
- *    one for the ordinal column; this is enforced when constructing the RTE.
- *    Thus when ORDINALITY is used, there will be exactly one more colname
- *    than would have been present otherwise.
+ *	  RTEs with ORDINALITY must always have the last colname entry being the
+ *	  one for the ordinal column; this is enforced when constructing the RTE.
+ *	  Thus when ORDINALITY is used, there will be exactly one more colname
+ *	  than would have been present otherwise.
  *
  *	  In JOIN RTEs, the colnames in both alias and eref are one-to-one with
  *	  joinaliasvars entries.  A JOIN RTE will omit columns of its inputs when
@@ -757,21 +760,16 @@ typedef struct RangeTblEntry
 	/*
 	 * Fields valid for a function RTE (else NULL):
 	 *
-	 * If the function returns an otherwise-unspecified RECORD, funccoltypes
-	 * lists the column types declared in the RTE's column type specification,
-	 * funccoltypmods lists their declared typmods, funccolcollations their
-	 * collations.  Note that in this case, ORDINALITY is not permitted, so
-	 * there is no extra ordinal column to be allowed for.
+	 * If the function returns an otherwise-unspecified RECORD, we used to
+	 * store type lists here; we now push those down to the individual
+	 * FuncExpr nodes, so that we can handle multiple RECORD functions and/or
+	 * RECORD functions with ordinality.
 	 *
-	 * Otherwise, those fields are NIL, and the result column types must be
-	 * derived from the funcexpr while treating the ordinal column, if
-	 * present, as a special case.  (see get_rte_attribute_*)
+	 * So, in all cases the result column types can be determined from the
+	 * funcexprs, with the ordinality column, if present, appended to the end.
 	 */
-	Node	   *funcexpr;		/* expression tree for func call */
-	List	   *funccoltypes;	/* OID list of column type OIDs */
-	List	   *funccoltypmods; /* integer list of column typmods */
-	List	   *funccolcollations;		/* OID list of column collation OIDs */
-	bool		funcordinality;	/* is this called WITH ORDINALITY? */
+	List	   *funcexprs;		/* expression trees for func calls */
+	bool		funcordinality; /* is this called WITH ORDINALITY? */
 
 	/*
 	 * Fields valid for a values RTE (else NIL):

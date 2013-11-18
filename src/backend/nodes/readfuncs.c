@@ -562,6 +562,10 @@ _readFuncExpr(void)
 	READ_OID_FIELD(funccollid);
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
+	READ_NODE_FIELD(funccolnames);
+	READ_NODE_FIELD(funccoltypes);
+	READ_NODE_FIELD(funccoltypmods);
+	READ_NODE_FIELD(funccolcollations);
 	READ_LOCATION_FIELD(location);
 
 	READ_DONE();
@@ -1220,10 +1224,7 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(joinaliasvars);
 			break;
 		case RTE_FUNCTION:
-			READ_NODE_FIELD(funcexpr);
-			READ_NODE_FIELD(funccoltypes);
-			READ_NODE_FIELD(funccoltypmods);
-			READ_NODE_FIELD(funccolcollations);
+			READ_NODE_FIELD(funcexprs);
 			READ_BOOL_FIELD(funcordinality);
 			break;
 		case RTE_VALUES:

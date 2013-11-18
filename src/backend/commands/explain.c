@@ -1259,7 +1259,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_FunctionScan:
 			if (es->verbose)
-				show_expression(((FunctionScan *) plan)->funcexpr,
+				show_expression((Node *) ((FunctionScan *) plan)->funcexprs,
 								"Function Call", planstate, ancestors,
 								es->verbose, es);
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
@@ -1984,21 +1984,22 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 			break;
 		case T_FunctionScan:
 			{
-				Node	   *funcexpr;
+				FunctionScan *fscan = (FunctionScan *) plan;
 
 				/* Assert it's on a RangeFunction */
 				Assert(rte->rtekind == RTE_FUNCTION);
 
 				/*
-				 * If the expression is still a function call, we can get the
-				 * real name of the function.  Otherwise, punt (this can
-				 * happen if the optimizer simplified away the function call,
-				 * for example).
+				 * If the expression is still a function call of a single
+				 * function, we can get the real name of the function.
+				 * Otherwise, punt. (even if it was a single function call
+				 * originally, the optimizer could have simplified it away)
 				 */
-				funcexpr = ((FunctionScan *) plan)->funcexpr;
-				if (funcexpr && IsA(funcexpr, FuncExpr))
+				if (fscan->funcexprs && list_length(fscan->funcexprs) == 1 &&
+					IsA(linitial(fscan->funcexprs), FuncExpr))
 				{
-					Oid			funcid = ((FuncExpr *) funcexpr)->funcid;
+					FuncExpr   *funcexpr = linitial(fscan->funcexprs);
+					Oid			funcid = funcexpr->funcid;
 
 					objectname = get_func_name(funcid);
 					if (es->verbose)

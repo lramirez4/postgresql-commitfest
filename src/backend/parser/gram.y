@@ -153,6 +153,7 @@ static void doNegateFloat(Value *v);
 static Node *makeAArrayExpr(List *elements, int location);
 static Node *makeXmlExpr(XmlExprOp op, char *name, List *named_args,
 						 List *args, int location);
+static void processTableFuncColdef(RangeFunction *n, List *coldeflist, int location, core_yyscan_t yyscanner);
 static List *mergeTableFuncParameters(List *func_args, List *columns);
 static TypeName *TableFuncTypeName(List *columns);
 static RangeVar *makeRangeVarFromAnyName(List *names, int position, core_yyscan_t yyscanner);
@@ -404,8 +405,13 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <defelt>	def_elem reloption_elem old_aggr_elem
 %type <node>	def_arg columnElem where_clause where_or_current_clause
 				a_expr b_expr c_expr AexprConst indirection_el
-				columnref in_expr having_clause func_table array_expr
+				columnref in_expr having_clause array_expr
 				ExclusionWhereClause
+%type <list>	func_table_def
+%type <list>	func_table_list
+%type <list>	func_table_single
+%type <list>    opt_col_def_list
+%type <boolean> opt_ordinality
 %type <list>	ExclusionConstraintList ExclusionConstraintElem
 %type <list>	func_arg_list
 %type <node>	func_arg_expr
@@ -420,7 +426,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	func_alias_clause
 %type <sortby>	sortby
 %type <ielem>	index_elem
-%type <node>	table_ref
+%type <node>	table_ref func_table_ref
 %type <jexpr>	joined_table
 %type <range>	relation_expr
 %type <range>	relation_expr_opt_alias
@@ -9638,53 +9644,29 @@ from_list:
 			| from_list ',' table_ref				{ $$ = lappend($1, $3); }
 		;
 
+opt_ordinality: WITH_ORDINALITY						{ $$ = true; }
+			| /*EMPTY*/								{ $$ = false; }
+		;
+
 /*
  * table_ref is where an alias clause can be attached.
+ *
+ * func_table is a list whose first element is a list of FuncCall nodes,
+ * and which has a second element iff the TABLE() syntax was used.
  */
 table_ref:	relation_expr opt_alias_clause
 				{
 					$1->alias = $2;
 					$$ = (Node *) $1;
 				}
-			| func_table func_alias_clause
+			| func_table_ref
 				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = false;
-					n->ordinality = false;
-					n->funccallnode = $1;
-					n->alias = linitial($2);
-					n->coldeflist = lsecond($2);
-					$$ = (Node *) n;
+					$$ = (Node *) $1;
 				}
-			| func_table WITH_ORDINALITY func_alias_clause
+			| LATERAL_P func_table_ref
 				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = false;
-					n->ordinality = true;
-					n->funccallnode = $1;
-					n->alias = linitial($3);
-					n->coldeflist = lsecond($3);
-					$$ = (Node *) n;
-				}
-			| LATERAL_P func_table func_alias_clause
-				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = true;
-					n->ordinality = false;
-					n->funccallnode = $2;
-					n->alias = linitial($3);
-					n->coldeflist = lsecond($3);
-					$$ = (Node *) n;
-				}
-			| LATERAL_P func_table WITH_ORDINALITY func_alias_clause
-				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = true;
-					n->ordinality = true;
-					n->funccallnode = $2;
-					n->alias = linitial($4);
-					n->coldeflist = lsecond($4);
-					$$ = (Node *) n;
+					((RangeFunction *) $2)->lateral = true;
+					$$ = $2;
 				}
 			| select_with_parens opt_alias_clause
 				{
@@ -9757,6 +9739,55 @@ table_ref:	relation_expr opt_alias_clause
 				}
 		;
 
+/*----------
+ * func_table_ref represents a function invocation in FROM list. It can be a
+ * plain function call, like "FROM foo(...)", or a TABLE expression with one
+ * or more function calls, "FROM TABLE (foo(...), bar(...))".
+ *
+ * In the TABLE syntax, a column definition list can be given for each
+ * function. For example:
+ *
+ *   FROM TABLE (foo() AS (foo_res_a text, foo_res_b text),
+ *               bar() AS (bar_res_a text, bar_res_b text)) AS alias
+ *
+ * In the plain function call syntax, a column definition list can be given
+ * like this:
+ *
+ *   FROM foo() AS alias (foo_res_a text, foo_res_b text)
+ *
+ * For backwards-compatibility, that is also allowed with the TABLE syntax,
+ * if the TABLE-expression contains only one function call:
+ *
+ *   FROM TABLE(foo()) AS alias (foo_res_a text, foo_res_b text)"
+ *
+ *----------
+ */
+func_table_ref: func_table_single opt_ordinality func_alias_clause
+				{
+					RangeFunction *n = makeNode(RangeFunction);
+
+					n->ordinality = $2;
+					n->is_table = false;
+					n->funccallnodes = $1;
+					n->alias = linitial($3);
+
+					processTableFuncColdef(n, lsecond($3), @3, yyscanner);
+
+					$$ = (Node *) n;
+				}
+			| TABLE '(' func_table_list ')' opt_ordinality func_alias_clause
+				{
+					RangeFunction *n = makeNode(RangeFunction);
+					n->ordinality = $5;
+					n->is_table = true;
+					n->funccallnodes = $3;
+					n->alias = linitial($6);
+
+					processTableFuncColdef(n, lsecond($6), @3, yyscanner);
+
+					$$ = (Node *) n;
+				}
+		;
 
 /*
  * It may seem silly to separate joined_table from table_ref, but there is
@@ -9996,9 +10027,101 @@ relation_expr_opt_alias: relation_expr					%prec UMINUS
 				}
 		;
 
-func_table: func_expr_windowless					{ $$ = $1; }
+func_table_list: func_table_def						{ $$ = $1; }
+			| func_table_list ',' func_table_def	{ $$ = list_concat($1, $3); }
 		;
 
+func_table_def: func_table_single opt_col_def_list
+			{
+				if (list_length($2) > 0)
+				{
+					List   *l = $1;
+
+					if (list_length(l) > 1)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("a column definition list is not allowed for unnest with multiple arguments"),
+								 errhint("Use separate unnest calls with one argument each"),
+								 parser_errposition(@2)));
+
+					/*
+					 * A column definition list is only allowed for functions
+					 * returning 'record', but that is checked in later, in
+					 * parse analysis, as we don't know the result type yet.
+					 * We do check that it's a regular FuncCall, though.
+					 * (it could be some other expression that looks like
+					 * a function call but is handled as a separate expression
+					 * type, e.g COALESCE)
+					 */
+					if (!IsA(linitial(l), FuncCall))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("a column definition list is not allowed for this expression"),
+								 parser_errposition(@2)));
+
+					((FuncCall *) linitial(l))->coldeflist = $2;
+				}
+				$$ = $1;
+			}
+		;
+
+/*
+ * All table function calls in FROM come through here so that we can do the
+ * expansion of unnest().
+ */
+func_table_single: func_expr_windowless
+			{
+				/*----------
+				 * Handle the spec's UNNEST syntax, by transforming
+				 *
+				 *   UNNEST(a, b, ...)
+				 *
+				 * into
+				 *
+				 *   TABLE (UNNEST(a), UNNEST(b), ...)
+				 *
+				 * We handle this here, rather than directly as grammar
+				 * rules, to avoid interfering with the use of unnest()
+				 * as a plain SRF in other contexts. Ugly, but effective.
+				 *
+				 * Note, strcmp not pg_strcasecmp, identifiers have
+				 * already been casefolded.
+				 *----------
+				 */
+				if (IsA($1, FuncCall) &&
+					list_length(((FuncCall *) $1)->funcname) == 1 &&
+					strcmp(strVal(linitial(((FuncCall *) $1)->funcname)), "unnest") == 0)
+				{
+					FuncCall *fc = (FuncCall *) $1;
+					List	 *funccalls = NIL;
+					ListCell *lc;
+
+					if (fc->agg_order != NIL || fc->func_variadic || fc->agg_star || fc->agg_distinct)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("invalid syntax for unnest()"),
+								 parser_errposition(@1)));
+
+					foreach(lc, fc->args)
+					{
+						funccalls = lappend(funccalls,
+											makeFuncCall(SystemFuncName("unnest"),
+														 list_make1(lfirst(lc)),
+														 fc->location));
+					}
+
+					$$ = funccalls;
+				}
+				else
+				{
+					$$ = list_make1($1);
+				}
+			}
+		;
+
+opt_col_def_list: AS '(' TableFuncElementList ')'	{ $$ = $3; }
+				| /*EMPTY*/							{ $$ = NIL; }
+			;
 
 where_clause:
 			WHERE a_expr							{ $$ = $2; }
@@ -13393,6 +13516,51 @@ makeXmlExpr(XmlExprOp op, char *name, List *named_args, List *args,
 	x->type = InvalidOid;			/* marks the node as not analyzed */
 	x->location = location;
 	return (Node *) x;
+}
+
+/*
+ * Support the old column definition list syntax, either when TABLE() was
+ * not used, or when TABLE(func()) was used with only one function.
+ *
+ * This handles pushing the coldeflist down into the function call node.
+ */
+static void
+processTableFuncColdef(RangeFunction *n, List *coldeflist,
+					   int location,  core_yyscan_t yyscanner)
+{
+	/*
+	 * coldeflist is allowed only for exactly one function; if more than one,
+	 * then the coldeflist must be applied inside TABLE() not outside.
+	 */
+	if (coldeflist != NIL)
+	{
+		FuncCall *fn = linitial(n->funccallnodes);
+
+		if (list_length(n->funccallnodes) > 1)
+		{
+			if (n->is_table)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("a column definition list is not allowed for TABLE() with multiple functions"),
+						 errhint("Give column definition lists for individual functions inside TABLE()"),
+						 parser_errposition(location)));
+		}
+
+		if (!IsA(fn, FuncCall))
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("a column definition list is not allowed for this expression"),
+					 parser_errposition(location)));
+
+		if (fn->coldeflist != NIL)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("multiple column definition lists are not allowed for the same function"),
+					 errhint("remove one of the definition lists"),
+					 parser_errposition(location)));
+
+		fn->coldeflist = coldeflist;
+	}
 }
 
 /*

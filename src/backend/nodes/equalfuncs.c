@@ -248,6 +248,10 @@ _equalFuncExpr(const FuncExpr *a, const FuncExpr *b)
 	COMPARE_SCALAR_FIELD(funccollid);
 	COMPARE_SCALAR_FIELD(inputcollid);
 	COMPARE_NODE_FIELD(args);
+	COMPARE_NODE_FIELD(funccolnames);
+	COMPARE_NODE_FIELD(funccoltypes);
+	COMPARE_NODE_FIELD(funccoltypmods);
+	COMPARE_NODE_FIELD(funccolcollations);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -2016,6 +2020,7 @@ _equalFuncCall(const FuncCall *a, const FuncCall *b)
 	COMPARE_SCALAR_FIELD(agg_distinct);
 	COMPARE_SCALAR_FIELD(func_variadic);
 	COMPARE_NODE_FIELD(over);
+	COMPARE_NODE_FIELD(coldeflist);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -2142,9 +2147,9 @@ _equalRangeFunction(const RangeFunction *a, const RangeFunction *b)
 {
 	COMPARE_SCALAR_FIELD(ordinality);
 	COMPARE_SCALAR_FIELD(lateral);
-	COMPARE_NODE_FIELD(funccallnode);
+	COMPARE_SCALAR_FIELD(is_table);
+	COMPARE_NODE_FIELD(funccallnodes);
 	COMPARE_NODE_FIELD(alias);
-	COMPARE_NODE_FIELD(coldeflist);
 
 	return true;
 }
@@ -2245,10 +2250,7 @@ _equalRangeTblEntry(const RangeTblEntry *a, const RangeTblEntry *b)
 	COMPARE_SCALAR_FIELD(security_barrier);
 	COMPARE_SCALAR_FIELD(jointype);
 	COMPARE_NODE_FIELD(joinaliasvars);
-	COMPARE_NODE_FIELD(funcexpr);
-	COMPARE_NODE_FIELD(funccoltypes);
-	COMPARE_NODE_FIELD(funccoltypmods);
-	COMPARE_NODE_FIELD(funccolcollations);
+	COMPARE_NODE_FIELD(funcexprs);
 	COMPARE_SCALAR_FIELD(funcordinality);
 	COMPARE_NODE_FIELD(values_lists);
 	COMPARE_NODE_FIELD(values_collations);

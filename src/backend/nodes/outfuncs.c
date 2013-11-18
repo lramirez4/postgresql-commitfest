@@ -512,16 +512,22 @@ _outSubqueryScan(StringInfo str, const SubqueryScan *node)
 static void
 _outFunctionScan(StringInfo str, const FunctionScan *node)
 {
+	ListCell   *lc;
+
 	WRITE_NODE_TYPE("FUNCTIONSCAN");
 
 	_outScanInfo(str, (const Scan *) node);
 
-	WRITE_NODE_FIELD(funcexpr);
+	WRITE_NODE_FIELD(funcexprs);
 	WRITE_NODE_FIELD(funccolnames);
-	WRITE_NODE_FIELD(funccoltypes);
-	WRITE_NODE_FIELD(funccoltypmods);
-	WRITE_NODE_FIELD(funccolcollations);
 	WRITE_BOOL_FIELD(funcordinality);
+
+	appendStringInfoString(str, " :funcparams");
+	foreach(lc, node->funcparams)
+	{
+		appendStringInfoChar(str, ' ');
+		_outBitmapset(str, lfirst(lc));
+	}
 }
 
 static void
@@ -1012,6 +1018,10 @@ _outFuncExpr(StringInfo str, const FuncExpr *node)
 	WRITE_OID_FIELD(funccollid);
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
+	WRITE_NODE_FIELD(funccolnames);
+	WRITE_NODE_FIELD(funccoltypes);
+	WRITE_NODE_FIELD(funccoltypmods);
+	WRITE_NODE_FIELD(funccolcollations);
 	WRITE_LOCATION_FIELD(location);
 }
 
@@ -2092,6 +2102,7 @@ _outFuncCall(StringInfo str, const FuncCall *node)
 	WRITE_BOOL_FIELD(agg_distinct);
 	WRITE_BOOL_FIELD(func_variadic);
 	WRITE_NODE_FIELD(over);
+	WRITE_NODE_FIELD(coldeflist);
 	WRITE_LOCATION_FIELD(location);
 }
 
@@ -2382,10 +2393,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			WRITE_NODE_FIELD(joinaliasvars);
 			break;
 		case RTE_FUNCTION:
-			WRITE_NODE_FIELD(funcexpr);
-			WRITE_NODE_FIELD(funccoltypes);
-			WRITE_NODE_FIELD(funccoltypmods);
-			WRITE_NODE_FIELD(funccolcollations);
+			WRITE_NODE_FIELD(funcexprs);
 			WRITE_BOOL_FIELD(funcordinality);
 			break;
 		case RTE_VALUES:
@@ -2621,9 +2629,9 @@ _outRangeFunction(StringInfo str, const RangeFunction *node)
 
 	WRITE_BOOL_FIELD(ordinality);
 	WRITE_BOOL_FIELD(lateral);
-	WRITE_NODE_FIELD(funccallnode);
+	WRITE_BOOL_FIELD(is_table);
+	WRITE_NODE_FIELD(funccallnodes);
 	WRITE_NODE_FIELD(alias);
-	WRITE_NODE_FIELD(coldeflist);
 }
 
 static void
