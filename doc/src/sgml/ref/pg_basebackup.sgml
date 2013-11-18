@@ -203,6 +203,18 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>--xlogdir=<replaceable class="parameter">xlogdir</replaceable></option></term>
+      <listitem>
+       <para>
+        Specify the location for the transaction log directory. 
+        <literal>xlogdir</literal> should be an absolute path.
+        User can specify the xlog directory, only if the format is plain.
+        Data directory and xlog directory shouldn't be same.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-x</option></term>
       <term><option>--xlog</option></term>
       <listitem>

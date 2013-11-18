@@ -35,6 +35,7 @@
 
 /* Global options */
 char	   *basedir = NULL;
+static char *xlog_dir = "";
 char		format = 'p';		/* p(lain)/t(ar) */
 char	   *label = "pg_basebackup base backup";
 bool		showprogress = false;
@@ -73,6 +74,9 @@ static PQExpBuffer recoveryconfcontents = NULL;
 
 /* Function headers */
 static void usage(void);
+static char *get_current_working_dir();
+static char *get_absolute_path(const char *input_path);
+static void verify_data_and_xlog_dir_same();
 static void verify_dir_is_empty_or_create(char *dirname);
 static void progress_report(int tablespacenum, const char *filename);
 
@@ -115,6 +119,7 @@ usage(void)
 	printf(_("  -x, --xlog             include required WAL files in backup (fetch mode)\n"));
 	printf(_("  -X, --xlog-method=fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
+	printf(_("      --xlogdir=XLOGDIR  location for the transaction log directory\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
 	printf(_("  -Z, --compress=0-9     compress tar output with given compression level\n"));
 	printf(_("\nGeneral options:\n"));
@@ -340,6 +345,111 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
 		disconnect_and_exit(1);
 	}
 #endif
+}
+
+/*
+ * Returns the malloced string of containing current working directory.
+ * The caller has to take care of freeing the memory.
+ * On failure exits with error code.
+ */
+static char *
+get_current_working_dir()
+{
+	char	   *buf;
+	size_t		buflen;
+
+	buflen = MAXPGPATH;
+	for (;;)
+	{
+		buf = pg_malloc(buflen);
+		if (getcwd(buf, buflen))
+			break;
+		else if (errno == ERANGE)
+		{
+			pg_free(buf);
+			buflen *= 2;
+			continue;
+		}
+		else
+		{
+			pg_free(buf);
+			fprintf(stderr,
+					_("%s: could not get current working directory: %s\n"),
+					progname, strerror(errno));
+			exit(1);
+		}
+	}
+
+	return buf;
+}
+
+/*
+ * calculates the absolute path for the given path. The output absolute path
+ * is a malloced string. The caller needs to take care of freeing the memory.
+ */
+static char *
+get_absolute_path(const char *input_path)
+{
+	char	   *pwd = NULL;
+	char	   *abspath = NULL;
+
+	/* Getting the present working directory */
+	pwd = get_current_working_dir();
+
+	if (chdir(input_path) < 0)
+	{
+		/* Directory doesn't exist */
+		if (errno == ENOENT)
+			return NULL;
+
+		fprintf(stderr, _("%s: could not change directory to \"%s\": %s\n"),
+				progname, input_path, strerror(errno));
+		exit(1);
+	}
+
+	abspath = get_current_working_dir();
+
+	/* Returning back to old working directory */
+	if (chdir(pwd) < 0)
+	{
+		fprintf(stderr, _("%s: could not change directory to \"%s\": %s\n"),
+				progname, pwd, strerror(errno));
+		exit(1);
+	}
+
+	pg_free(pwd);
+	return abspath;
+}
+
+/*
+ * Verify the given data directory and transaction log directory are
+ * same or not.
+ */
+static void
+verify_data_and_xlog_dir_same()
+{
+	char	   *datadir = NULL;
+	char	   *xlogdir = NULL;
+
+	xlogdir = get_absolute_path(xlog_dir);
+	if (xlogdir == NULL)
+		return;
+
+	/* Base directory should be created already, unless throw an error */
+	datadir = get_absolute_path(basedir);
+	if (datadir == NULL)
+		exit(1);
+
+	/* checking the provided data and xlog directories are same or not? */
+	if (strcmp(datadir, xlogdir) == 0)
+	{
+		fprintf(stderr, _("%s: Data directory and transaction log "
+						  "directory are same\n"), progname);
+		exit(1);
+	}
+
+	pg_free(xlogdir);
+	pg_free(datadir);
 }
 
 /*
@@ -979,11 +1089,12 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 					if (mkdir(filename, S_IRWXU) != 0)
 					{
 						/*
-						 * When streaming WAL, pg_xlog will have been created
-						 * by the wal receiver process, so just ignore failure
-						 * on that.
+						 * If user specified xlog_dir or when streaming WAL,
+						 * pg_xlog will have been created. So just ignore
+						 * failure on that.
 						 */
-						if (!streamwal || strcmp(filename + strlen(filename) - 8, "/pg_xlog") != 0)
+						if ((!streamwal && (strcmp(xlog_dir, "") == 0))
+							|| strcmp(filename + strlen(filename) - 8, "/pg_xlog") != 0)
 						{
 							fprintf(stderr,
 							_("%s: could not create directory \"%s\": %s\n"),
@@ -1666,6 +1777,7 @@ main(int argc, char **argv)
 		{"status-interval", required_argument, NULL, 's'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"progress", no_argument, NULL, 'P'},
+		{"xlogdir", required_argument, NULL, 1},
 		{NULL, 0, NULL, 0}
 	};
 	int			c;
@@ -1749,6 +1861,9 @@ main(int argc, char **argv)
 							progname, optarg);
 					exit(1);
 				}
+				break;
+			case 1:
+				xlog_dir = pg_strdup(optarg);
 				break;
 			case 'l':
 				label = pg_strdup(optarg);
@@ -1862,10 +1977,11 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if (format != 'p' && streamwal)
+	if (format != 'p' && (streamwal || (strcmp(xlog_dir, "") != 0)))
 	{
 		fprintf(stderr,
-				_("%s: WAL streaming can only be used in plain mode\n"),
+				_("%s: Providing user specified xlog directory or "
+				  "WAL streaming can only be used in plain mode\n"),
 				progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
@@ -1889,6 +2005,42 @@ main(int argc, char **argv)
 	 */
 	if (format == 'p' || strcmp(basedir, "-") != 0)
 		verify_dir_is_empty_or_create(basedir);
+
+	/* Create transaction log symlink, if required */
+	if (strcmp(xlog_dir, "") != 0)
+	{
+		char	   *linkloc;
+
+		/* clean up xlog directory name, check it's absolute */
+		canonicalize_path(xlog_dir);
+		if (!is_absolute_path(xlog_dir))
+		{
+			fprintf(stderr, _("%s: transaction log directory location must be "
+							  "an absolute path\n"), progname);
+			exit(1);
+		}
+
+		verify_data_and_xlog_dir_same();
+		verify_dir_is_empty_or_create(xlog_dir);
+
+		/* form name of the place where the symlink must go */
+		linkloc = (char *) pg_malloc0(strlen(basedir) + 8 + 1);
+		sprintf(linkloc, "%s/pg_xlog", basedir);
+
+#ifdef HAVE_SYMLINK
+		if (symlink(xlog_dir, linkloc) != 0)
+		{
+			fprintf(stderr, _("%s: could not create symbolic link \"%s\": %s\n"),
+					progname, linkloc, strerror(errno));
+			exit(1);
+		}
+#else
+		fprintf(stderr, _("%s: symlinks are not supported on this platform "
+						  "cannot use xlogdir"));
+		exit(1);
+#endif
+		pg_free(linkloc);
+	}
 
 	BaseBackup();
 
