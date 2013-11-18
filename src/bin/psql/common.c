@@ -691,19 +691,23 @@ ProcessResult(PGresult **results)
 			 */
 			SetCancelConn();
 			if (result_status == PGRES_COPY_OUT)
-				success = handleCopyOut(pset.db, pset.queryFout) && success;
+				success = handleCopyOut(pset.db, pset.queryFout, results) && success;
 			else
 				success = handleCopyIn(pset.db, pset.cur_cmd_source,
-									   PQbinaryTuples(*results)) && success;
+									   PQbinaryTuples(*results), results) && success;
 			ResetCancelConn();
 
 			/*
 			 * Call PQgetResult() once more.  In the typical case of a
 			 * single-command string, it will return NULL.	Otherwise, we'll
 			 * have other results to process that may include other COPYs.
+			 * If it is NULL, then the last result will be returned back.
 			 */
-			PQclear(*results);
-			*results = next_result = PQgetResult(pset.db);
+			if ((next_result = PQgetResult(pset.db)))
+			{
+				PQclear(*results);
+				*results = next_result;
+			}
 		}
 		else if (first_cycle)
 			/* fast path: no COPY commands; PQexec visited all results */

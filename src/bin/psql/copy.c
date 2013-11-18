@@ -433,12 +433,11 @@ do_copy(const char *args)
  * result is true if successful, false if not.
  */
 bool
-handleCopyOut(PGconn *conn, FILE *copystream)
+handleCopyOut(PGconn *conn, FILE *copystream, PGresult **res)
 {
 	bool		OK = true;
 	char	   *buf;
 	int			ret;
-	PGresult   *res;
 
 	for (;;)
 	{
@@ -490,19 +489,18 @@ handleCopyOut(PGconn *conn, FILE *copystream)
 	 * TO STDOUT commands.	We trust that no condition can make PQexec() fail
 	 * indefinitely while retaining status PGRES_COPY_OUT.
 	 */
-	while (res = PQgetResult(conn), PQresultStatus(res) == PGRES_COPY_OUT)
+	while (*res = PQgetResult(conn), PQresultStatus(*res) == PGRES_COPY_OUT)
 	{
 		OK = false;
-		PQclear(res);
+		PQclear(*res);
 
 		PQexec(conn, "-- clear PGRES_COPY_OUT state");
 	}
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	if (PQresultStatus(*res) != PGRES_COMMAND_OK)
 	{
 		psql_error("%s", PQerrorMessage(conn));
 		OK = false;
 	}
-	PQclear(res);
 
 	return OK;
 }
@@ -523,12 +521,11 @@ handleCopyOut(PGconn *conn, FILE *copystream)
 #define COPYBUFSIZ 8192
 
 bool
-handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary)
+handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 {
 	bool		OK;
 	const char *prompt;
 	char		buf[COPYBUFSIZ];
-	PGresult   *res;
 
 	/*
 	 * Establish longjmp destination for exiting from wait-for-input. (This is
@@ -682,19 +679,18 @@ copyin_cleanup:
 	 * indefinitely while retaining status PGRES_COPY_IN, we get an infinite
 	 * loop.  This is more realistic than handleCopyOut()'s counterpart risk.
 	 */
-	while (res = PQgetResult(conn), PQresultStatus(res) == PGRES_COPY_IN)
+	while (*res = PQgetResult(conn), PQresultStatus(*res) == PGRES_COPY_IN)
 	{
 		OK = false;
-		PQclear(res);
+		PQclear(*res);
 
 		PQputCopyEnd(pset.db, _("trying to exit copy mode"));
 	}
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	if (PQresultStatus(*res) != PGRES_COMMAND_OK)
 	{
 		psql_error("%s", PQerrorMessage(conn));
 		OK = false;
 	}
-	PQclear(res);
 
 	return OK;
 }

@@ -16,7 +16,7 @@ bool		do_copy(const char *args);
 
 /* lower level processors for copy in/out streams */
 
-bool		handleCopyOut(PGconn *conn, FILE *copystream);
-bool		handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary);
+bool		handleCopyOut(PGconn *conn, FILE *copystream, PGresult **res);
+bool		handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res);
 
 #endif
