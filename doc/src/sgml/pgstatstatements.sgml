@@ -79,10 +79,24 @@
      </row>
 
      <row>
+      <entry><structfield>avg_time</structfield></entry>
+      <entry><type>double precision</type></entry>
+      <entry></entry>
+      <entry>Average time spent in the statement, in milliseconds</entry>
+     </row>
+
+     <row>
       <entry><structfield>rows</structfield></entry>
       <entry><type>bigint</type></entry>
       <entry></entry>
       <entry>Total number of rows retrieved or affected by the statement</entry>
+     </row>
+
+     <row>
+      <entry><structfield>shared_blks_hit_percent</structfield></entry>
+      <entry><type>double precision</type></entry>
+      <entry></entry>
+      <entry>Shared block cache hit percentage by the statement (shared_blks_hit / (shared_blks_hit + shared_blks_read))</entry>
      </row>
 
      <row>
@@ -364,39 +378,38 @@ $ pgbench -i bench
 $ pgbench -c10 -t300 bench
 
 bench=# \x
-bench=# SELECT query, calls, total_time, rows, 100.0 * shared_blks_hit /
-               nullif(shared_blks_hit + shared_blks_read, 0) AS hit_percent
+bench=# SELECT query, calls, total_time, rows, shared_blks_hit_percent
           FROM pg_stat_statements ORDER BY total_time DESC LIMIT 5;
--[ RECORD 1 ]---------------------------------------------------------------------
-query       | UPDATE pgbench_branches SET bbalance = bbalance + ? WHERE bid = ?;
-calls       | 3000
-total_time  | 9609.00100000002
-rows        | 2836
-hit_percent | 99.9778970000200936
--[ RECORD 2 ]---------------------------------------------------------------------
-query       | UPDATE pgbench_tellers SET tbalance = tbalance + ? WHERE tid = ?;
-calls       | 3000
-total_time  | 8015.156
-rows        | 2990
-hit_percent | 99.9731126579631345
--[ RECORD 3 ]---------------------------------------------------------------------
-query       | copy pgbench_accounts from stdin
-calls       | 1
-total_time  | 310.624
-rows        | 100000
-hit_percent | 0.30395136778115501520
--[ RECORD 4 ]---------------------------------------------------------------------
-query       | UPDATE pgbench_accounts SET abalance = abalance + ? WHERE aid = ?;
-calls       | 3000
-total_time  | 271.741999999997
-rows        | 3000
-hit_percent | 93.7968855088209426
--[ RECORD 5 ]---------------------------------------------------------------------
-query       | alter table pgbench_accounts add primary key (aid)
-calls       | 1
-total_time  | 81.42
-rows        | 0
-hit_percent | 34.4947735191637631
+-[ RECORD 1 ]-----------+-------------------------------------------------------------------
+query                   | UPDATE pgbench_branches SET bbalance = bbalance + ? WHERE bid = ?;
+calls                   | 3000
+total_time              | 9609.00100000002
+rows                    | 2836
+shared_blks_hit_percent | 99.9778970000200936
+-[ RECORD 2 ]-----------+-------------------------------------------------------------------
+query                   | UPDATE pgbench_tellers SET tbalance = tbalance + ? WHERE tid = ?;
+calls                   | 3000
+total_time              | 8015.156
+rows                    | 2990
+shared_blks_hit_percent | 99.9731126579631345
+-[ RECORD 3 ]-----------+-------------------------------------------------------------------
+query                   | copy pgbench_accounts from stdin
+calls                   | 1
+total_time              | 310.624
+rows                    | 100000
+shared_blks_hit_percent | 0.30395136778115501520
+-[ RECORD 4 ]-----------+-------------------------------------------------------------------
+query                   | UPDATE pgbench_accounts SET abalance = abalance + ? WHERE aid = ?;
+calls                   | 3000
+total_time              | 271.741999999997
+rows                    | 3000
+shared_blks_hit_percent | 93.7968855088209426
+-[ RECORD 5 ]-----------+-------------------------------------------------------------------
+query                   | alter table pgbench_accounts add primary key (aid)
+calls                   | 1
+total_time              | 81.42
+rows                    | 0
+shared_blks_hit_percent | 34.4947735191637631
 </screen>
  </sect2>
 
