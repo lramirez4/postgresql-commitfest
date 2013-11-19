@@ -17,6 +17,7 @@
 
 #include "access/transam.h"
 #include "catalog/pg_type.h"
+#include "executor/nodeCustom.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/pathnode.h"
@@ -575,6 +576,30 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 					fix_scan_list(root, splan->scan.plan.qual, rtoffset);
 				splan->fdw_exprs =
 					fix_scan_list(root, splan->fdw_exprs, rtoffset);
+			}
+			break;
+
+		case T_CustomScan:
+			{
+				CustomScan	   *splan = (CustomScan *) plan;
+				CustomProvider *provider
+					= get_custom_provider(splan->custom_name);
+
+				if (provider->SetPlanRefCustomScan)
+					provider->SetPlanRefCustomScan(root, splan, rtoffset);
+				else if (splan->scan.scanrelid > 0)
+				{
+					splan->scan.scanrelid += rtoffset;
+					splan->scan.plan.targetlist =
+						fix_scan_list(root, splan->scan.plan.targetlist,
+									  rtoffset);
+					splan->scan.plan.qual =
+						fix_scan_list(root, splan->scan.plan.qual, rtoffset);
+					splan->custom_exprs =
+						fix_scan_list(root, splan->custom_exprs, rtoffset);
+				}
+				else
+					elog(ERROR, "No implementation to set plan reference");
 			}
 			break;
 

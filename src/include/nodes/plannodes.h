@@ -483,6 +483,22 @@ typedef struct ForeignScan
 	bool		fsSystemCol;	/* true if any "system column" is needed */
 } ForeignScan;
 
+/* ----------------
+ *		CustomScan node
+ * ----------------
+ */
+typedef struct CustomScan
+{
+	Scan		scan;
+
+	const char *custom_name;		/* name of custom scan provider */
+	int			custom_flags;		/* a set of CUSTOM__* flags */
+	List	   *custom_private;		/* private data for CSP  */
+	List	   *custom_exprs;		/* expressions that CSP may execute */
+
+	Plan	   *subqry_plan;		/* valid, if RTE_SUBQUERY */
+	Node	   *funcexpr;			/* valid, if RTE_FUNCTION */
+} CustomScan;
 
 /*
  * ==========

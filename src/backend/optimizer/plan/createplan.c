@@ -21,6 +21,7 @@
 
 #include "access/skey.h"
 #include "catalog/pg_class.h"
+#include "executor/nodeCustom.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -77,6 +78,9 @@ static WorkTableScan *create_worktablescan_plan(PlannerInfo *root, Path *best_pa
 						  List *tlist, List *scan_clauses);
 static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 						List *tlist, List *scan_clauses);
+static CustomScan *create_customscan_plan(PlannerInfo *root,
+										  CustomPath *best_path,
+										  List *tlist, List *scan_clauses);
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path,
 					 Plan *outer_plan, Plan *inner_plan);
 static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path,
@@ -235,6 +239,7 @@ create_plan_recurse(PlannerInfo *root, Path *best_path)
 		case T_CteScan:
 		case T_WorkTableScan:
 		case T_ForeignScan:
+		case T_CustomScan:
 			plan = create_scan_plan(root, best_path);
 			break;
 		case T_HashJoin:
@@ -409,6 +414,13 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 													(ForeignPath *) best_path,
 													tlist,
 													scan_clauses);
+			break;
+
+		case T_CustomScan:
+			plan = (Plan *) create_customscan_plan(root,
+												   (CustomPath *) best_path,
+												   tlist,
+												   scan_clauses);
 			break;
 
 		default:
@@ -2016,6 +2028,97 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 	return scan_plan;
 }
 
+/*
+ * create_customscan_plan
+ *   Returns a custom-scan plan for the base relation scanned by 'best_path'
+ *   with restriction clauses 'scan_clauses' and targetlist 'tlist'.
+ */
+static CustomScan *
+create_customscan_plan(PlannerInfo *root,
+					   CustomPath *best_path,
+					   List *tlist,
+					   List *scan_clauses)
+{
+	CustomProvider *provider = get_custom_provider(best_path->custom_name);
+	CustomScan	   *scan_plan = makeNode(CustomScan);
+	RelOptKind		reloptkind = best_path->path.parent->reloptkind;
+	RangeTblEntry  *rte;
+	Index			scan_relid;
+
+	if (reloptkind == RELOPT_BASEREL ||
+		reloptkind == RELOPT_OTHER_MEMBER_REL)
+	{
+		scan_relid = best_path->path.parent->relid;
+
+		rte = planner_rt_fetch(scan_relid, root);
+		/*
+		 * For EXPLAIN output, we save various information in CustomScan plan
+		 * structure. Custom-scan provider can utilize them, but it is not
+		 * recommendablt to adjust.
+		 */
+		if (rte->rtekind == RTE_SUBQUERY)
+		{
+			if (best_path->path.param_info)
+			{
+				List   *subplan_params
+					= best_path->path.parent->subplan_params;
+				process_subquery_nestloop_params(root, subplan_params);
+			}
+			scan_plan->subqry_plan = best_path->path.parent->subplan;
+		}
+		else if (rte->rtekind == RTE_FUNCTION)
+		{
+			Node   *funcexpr = rte->funcexpr;
+
+			if (best_path->path.param_info)
+				funcexpr = replace_nestloop_params(root, funcexpr);
+			scan_plan->funcexpr = funcexpr;
+		}
+	}
+	else if (reloptkind == RELOPT_JOINREL)
+		scan_relid = 0;
+	else
+		elog(ERROR, "unexpected reloptkind: %d", (int)reloptkind);
+
+	scan_clauses = order_qual_clauses(root, scan_clauses);
+	scan_plan->scan.plan.targetlist = NULL;	/* to be set by callback */
+	scan_plan->scan.plan.qual = NULL;		/* to be set by callback */
+	scan_plan->scan.plan.lefttree = NULL;
+	scan_plan->scan.plan.righttree = NULL;
+	scan_plan->scan.scanrelid = scan_relid;
+
+	scan_plan->custom_name = pstrdup(best_path->custom_name);
+	scan_plan->custom_flags = best_path->custom_flags;
+	scan_plan->custom_private = NIL;
+	scan_plan->custom_exprs = NULL;
+
+	/*
+	 * Let custom scan provider perform to set up this custom-scan plan
+	 * according to the given path information. 
+	 */
+	provider->InitCustomScanPlan(root, scan_plan,
+								 best_path, tlist, scan_clauses);
+
+	/* Copy cost data from Path to Plan; no need to make callback do this */
+	copy_path_costsize(&scan_plan->scan.plan, &best_path->path);
+
+	/*
+	 * Replace any outer-relation variables with nestloop params in the qual
+	 * and custom_exprs expressions.  We do this last so that the FDW doesn't
+	 * have to be involved.  (Note that parts of custom_exprs could have come
+	 * from join clauses, so doing this beforehand on the scan_clauses
+	 * wouldn't work.)
+	 */
+	if (best_path->path.param_info)
+	{
+		scan_plan->scan.plan.qual = (List *)
+			replace_nestloop_params(root, (Node *) scan_plan->scan.plan.qual);
+		scan_plan->custom_exprs = (List *)
+			replace_nestloop_params(root, (Node *) scan_plan->custom_exprs);
+	}
+
+	return scan_plan;
+}
 
 /*****************************************************************************
  *
