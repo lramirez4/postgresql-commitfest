@@ -369,6 +369,29 @@ get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 }
 
 /*
+ * path_is_ordered
+ * Return true if the path is apparently ordered on the pathkeys.
+ */
+bool
+path_is_ordered(Path *path, List *pathkeys)
+{
+	if (pathkeys_contained_in(pathkeys, path->pathkeys))
+		return true;
+
+	/*
+	 * If IndexPath is fully ordered, it is sufficiently ordered if index
+	 * pathkeys is a subset of target pathkeys
+	 */
+	if (pathkeys && path->pathkeys &&
+		IsA(path, IndexPath) &&
+		((IndexPath*)path)->indexinfo->full_ordered &&
+		(pathkeys_contained_in(path->pathkeys, pathkeys)))
+		return true;
+
+	return false;
+}
+
+/*
  * get_cheapest_fractional_path_for_pathkeys
  *	  Find the cheapest path (for retrieving a specified fraction of all
  *	  the tuples) that satisfies the given pathkeys and parameterization.
@@ -381,6 +404,8 @@ get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
  * 'pathkeys' represents a required ordering (in canonical form!)
  * 'required_outer' denotes allowable outer relations for parameterized paths
  * 'fraction' is the fraction of the total tuples expected to be retrieved
+ * paths->pathkeys might be replaced with pathkeys so as to declare that the
+ * path is ordered on it.
  */
 Path *
 get_cheapest_fractional_path_for_pathkeys(List *paths,
@@ -403,9 +428,17 @@ get_cheapest_fractional_path_for_pathkeys(List *paths,
 			compare_fractional_path_costs(matched_path, path, fraction) <= 0)
 			continue;
 
-		if (pathkeys_contained_in(pathkeys, path->pathkeys) &&
+		if (path_is_ordered(path, pathkeys) &&
 			bms_is_subset(PATH_REQ_OUTER(path), required_outer))
+		{
+			/*
+			 * Set required pathkeys as the path's pathkeys so as to declare
+			 * that this path is ordred on the pathkeys.
+			 */
+			if (list_length(path->pathkeys) < list_length(pathkeys))
+				path->pathkeys = pathkeys;
 			matched_path = path;
+		}
 	}
 	return matched_path;
 }
@@ -747,7 +780,7 @@ build_join_pathkeys(PlannerInfo *root,
 	 * contain pathkeys that were useful for forming this joinrel but are
 	 * uninteresting to higher levels.
 	 */
-	return truncate_useless_pathkeys(root, joinrel, outer_pathkeys);
+	return truncate_useless_pathkeys(root, joinrel, outer_pathkeys, false);
 }
 
 /****************************************************************************
@@ -1404,7 +1437,8 @@ right_merge_direction(PlannerInfo *root, PathKey *pathkey)
  * So the result is always either 0 or list_length(root->query_pathkeys).
  */
 static int
-pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys)
+pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys,
+							 bool pk_full_ordered)
 {
 	if (root->query_pathkeys == NIL)
 		return 0;				/* no special ordering requested */
@@ -1418,23 +1452,35 @@ pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys)
 		return list_length(root->query_pathkeys);
 	}
 
+	/*
+	 * Given that the pathkeys compose an unique key, they are useful for
+	 * ordering when they are a sublist of query_pathkeys.
+	 */
+	if (pk_full_ordered &&
+		pathkeys_contained_in(pathkeys, root->query_pathkeys))
+		return list_length(pathkeys);
+
 	return 0;					/* path ordering not useful */
 }
 
 /*
  * truncate_useless_pathkeys
  *		Shorten the given pathkey list to just the useful pathkeys.
+ *
+ * When pk_full_ordered is true, reconsider counting the uniqueness even if
+ * the pathkeys are once judged as useless by the general criteria.
  */
 List *
 truncate_useless_pathkeys(PlannerInfo *root,
 						  RelOptInfo *rel,
-						  List *pathkeys)
+						  List *pathkeys,
+						  bool pk_full_ordered)
 {
 	int			nuseful;
 	int			nuseful2;
 
 	nuseful = pathkeys_useful_for_merging(root, rel, pathkeys);
-	nuseful2 = pathkeys_useful_for_ordering(root, pathkeys);
+	nuseful2 = pathkeys_useful_for_ordering(root, pathkeys, pk_full_ordered);
 	if (nuseful2 > nuseful)
 		nuseful = nuseful2;
 

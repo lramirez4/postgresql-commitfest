@@ -160,6 +160,7 @@ extern bool pathkeys_contained_in(List *keys1, List *keys2);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 							   Relids required_outer,
 							   CostSelector cost_criterion);
+extern bool path_is_ordered(Path *path, List *pathkeys);
 extern Path *get_cheapest_fractional_path_for_pathkeys(List *paths,
 										  List *pathkeys,
 										  Relids required_outer,
@@ -191,7 +192,8 @@ extern List *make_inner_pathkeys_for_merge(PlannerInfo *root,
 							  List *outer_pathkeys);
 extern List *truncate_useless_pathkeys(PlannerInfo *root,
 						  RelOptInfo *rel,
-						  List *pathkeys);
+						  List *pathkeys,
+						  bool pk_full_ordered);
 extern bool has_useful_pathkeys(PlannerInfo *root, RelOptInfo *rel);
 
 #endif   /* PATHS_H */

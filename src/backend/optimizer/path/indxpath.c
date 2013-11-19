@@ -953,7 +953,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		index_pathkeys = build_index_pathkeys(root, index,
 											  ForwardScanDirection);
 		useful_pathkeys = truncate_useless_pathkeys(root, rel,
-													index_pathkeys);
+													index_pathkeys,
+													index->full_ordered);
 		orderbyclauses = NIL;
 		orderbyclausecols = NIL;
 	}
@@ -1015,7 +1016,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		index_pathkeys = build_index_pathkeys(root, index,
 											  BackwardScanDirection);
 		useful_pathkeys = truncate_useless_pathkeys(root, rel,
-													index_pathkeys);
+													index_pathkeys,
+													index->full_ordered);
 		if (useful_pathkeys != NIL)
 		{
 			ipath = create_index_path(root, index,

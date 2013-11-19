@@ -231,6 +231,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 */
 			if (info->relam == BTREE_AM_OID)
 			{
+				bool has_nullable_keycol = false;
+
 				/*
 				 * If it's a btree index, we can use its opfamily OIDs
 				 * directly as the sort ordering opfamily OIDs.
@@ -244,10 +246,25 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				for (i = 0; i < ncolumns; i++)
 				{
 					int16		opt = indexRelation->rd_indoption[i];
+					int16		keyattno = index->indkey.values[i];
 
 					info->reverse_sort[i] = (opt & INDOPTION_DESC) != 0;
 					info->nulls_first[i] = (opt & INDOPTION_NULLS_FIRST) != 0;
-				}
+
+					if (keyattno > 0)
+					{
+						has_nullable_keycol |= 
+							!relation->rd_att->attrs[keyattno - 1]->attnotnull;
+					}
+					else if (keyattno != ObjectIdAttributeNumber)
+						has_nullable_keycol = true;
+ 				}
+
+				/* Check to see if it is a full-ordered index */
+				if (IndexIsValid(index) &&
+					index->indisunique && index->indimmediate &&
+					!has_nullable_keycol)
+					info->full_ordered = true;
 			}
 			else if (indexRelation->rd_am->amcanorder)
 			{

@@ -524,6 +524,7 @@ typedef struct IndexOptInfo
 	bool		predOK;			/* true if predicate matches query */
 	bool		unique;			/* true if a unique index */
 	bool		immediate;		/* is uniqueness enforced immediately? */
+	bool		full_ordered;	/* is ordered rows not duplicate ? */
 	bool		hypothetical;	/* true if index doesn't really exist */
 	bool		canreturn;		/* can index return IndexTuples? */
 	bool		amcanorderbyop; /* does AM support order by operator result? */
