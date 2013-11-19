@@ -813,7 +813,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 					  numsortkeys * sizeof(bool)) == 0);
 
 		/* Now, insert a Sort node if subplan isn't sufficiently ordered */
-		if (!pathkeys_contained_in(pathkeys, subpath->pathkeys))
+		if (!path_is_ordered(subpath, pathkeys))
 			subplan = (Plan *) make_sort(root, subplan, pathkeys, numsortkeys,
 										 sortColIdx, sortOperators,
 										 collations, nullsFirst,
@@ -1151,6 +1151,7 @@ create_indexscan_plan(PlannerInfo *root,
 	List	   *fixed_indexquals;
 	List	   *fixed_indexorderbys;
 	ListCell   *l;
+	bool		uniquely_ordered = false;
 
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
@@ -1258,6 +1259,20 @@ create_indexscan_plan(PlannerInfo *root,
 			replace_nestloop_params(root, (Node *) indexorderbys);
 	}
 
+	/*
+	 * XXX: This is rather tricky. IndexPath's pathkeys may be both superset
+	 * (including the same) or subset of key columns of the index. This path
+	 * will emit distnct'edly ordered rows when the pathkeys contains the key
+	 * columns and the index is fully ordered on the key columns.
+	 *
+	 * See the point calling truncate_useless_pathkeys in build_index_paths()
+	 * for detail.
+	 */
+	if (list_length(best_path->path.pathkeys) >=
+		best_path->indexinfo->ncolumns &&
+		best_path->indexinfo->full_ordered)
+		uniquely_ordered = true;
+
 	/* Finally ready to build the plan node */
 	if (indexonly)
 		scan_plan = (Scan *) make_indexonlyscan(tlist,
@@ -1268,7 +1283,7 @@ create_indexscan_plan(PlannerInfo *root,
 												fixed_indexorderbys,
 											best_path->indexinfo->indextlist,
 												best_path->path.pathkeys,
-												false,
+												uniquely_ordered,
 												best_path->indexscandir);
 	else
 		scan_plan = (Scan *) make_indexscan(tlist,
@@ -1280,7 +1295,7 @@ create_indexscan_plan(PlannerInfo *root,
 											fixed_indexorderbys,
 											indexorderbys,
 											best_path->path.pathkeys,
-											false,
+											uniquely_ordered,
 											best_path->indexscandir);
 
 	copy_path_costsize(&scan_plan->plan, &best_path->path);

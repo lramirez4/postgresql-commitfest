@@ -1075,15 +1075,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		List	   *set_sortclauses;
 
 		/*
-		 * If there's a top-level ORDER BY, assume we have to fetch all the
-		 * tuples.	This might be too simplistic given all the hackery below
-		 * to possibly avoid the sort; but the odds of accurate estimates here
-		 * are pretty low anyway.
-		 */
-		if (parse->sortClause)
-			tuple_fraction = 0.0;
-
-		/*
 		 * Construct the plan for set operations.  The result will not need
 		 * any work except perhaps a top-level sort and/or LIMIT.  Note that
 		 * any special work for recursive unions is the responsibility of
