@@ -1011,6 +1011,19 @@ inheritance_planner(PlannerInfo *root)
 									 SS_assign_special_param(root));
 }
 
+static bool
+plan_is_ordered(Plan *plan, List *pathkeys)
+{
+	if (pathkeys_contained_in(pathkeys, plan->pathkeys))
+		return true;
+
+	if (plan->pathkeys && plan->is_unique &&
+		pathkeys_contained_in(plan->pathkeys, pathkeys))
+		return true;
+
+	return false;
+}
+
 /*--------------------
  * grouping_planner
  *	  Perform planning steps related to grouping, aggregation, etc.
@@ -1039,7 +1052,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	int64		count_est = 0;
 	double		limit_tuples = -1.0;
 	Plan	   *result_plan;
-	List	   *current_pathkeys;
 	double		dNumGroups = 0;
 	bool		use_hashed_distinct = false;
 	bool		tested_hashed_distinct = false;
@@ -1079,15 +1091,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 */
 		result_plan = plan_set_operations(root, tuple_fraction,
 										  &set_sortclauses);
-
-		/*
-		 * Calculate pathkeys representing the sort order (if any) of the set
-		 * operation's result.  We have to do this before overwriting the sort
-		 * key information...
-		 */
-		current_pathkeys = make_pathkeys_for_sortclauses(root,
-														 set_sortclauses,
-													result_plan->targetlist);
 
 		/*
 		 * We should not need to call preprocess_targetlist, since we must be
@@ -1442,15 +1445,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 												 tlist,
 												 &agg_costs,
 												 best_path);
-		if (result_plan != NULL)
-		{
-			/*
-			 * optimize_minmax_aggregates generated the full plan, with the
-			 * right tlist, and it has no sort order.
-			 */
-			current_pathkeys = NIL;
-		}
-		else
+		if (result_plan == NULL)
 		{
 			/*
 			 * Normal case --- create a plan according to query_planner's
@@ -1459,11 +1454,10 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			bool		need_sort_for_grouping = false;
 
 			result_plan = create_plan(root, best_path);
-			current_pathkeys = best_path->pathkeys;
 
 			/* Detect if we'll need an explicit sort for grouping */
 			if (parse->groupClause && !use_hashed_grouping &&
-			  !pathkeys_contained_in(root->group_pathkeys, current_pathkeys))
+				!plan_is_ordered(result_plan, root->group_pathkeys))
 			{
 				need_sort_for_grouping = true;
 
@@ -1541,37 +1535,20 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									extract_grouping_ops(parse->groupClause),
 												numGroups,
 												result_plan);
-				/* Hashed aggregation produces randomly-ordered results */
-				current_pathkeys = NIL;
 			}
 			else if (parse->hasAggs)
 			{
 				/* Plain aggregate plan --- sort if needed */
 				AggStrategy aggstrategy;
 
-				if (parse->groupClause)
+				aggstrategy = parse->groupClause ? AGG_SORTED : AGG_PLAIN;
+				if (aggstrategy == AGG_SORTED && need_sort_for_grouping)
 				{
-					if (need_sort_for_grouping)
-					{
-						result_plan = (Plan *)
-							make_sort_from_groupcols(root,
-													 parse->groupClause,
-													 groupColIdx,
-													 result_plan);
-						current_pathkeys = root->group_pathkeys;
-					}
-					aggstrategy = AGG_SORTED;
-
-					/*
-					 * The AGG node will not change the sort ordering of its
-					 * groups, so current_pathkeys describes the result too.
-					 */
-				}
-				else
-				{
-					aggstrategy = AGG_PLAIN;
-					/* Result will be only one row anyway; no sort order */
-					current_pathkeys = NIL;
+					result_plan = (Plan *)
+						make_sort_from_groupcols(root,
+												 parse->groupClause,
+												 groupColIdx,
+												 result_plan);
 				}
 
 				result_plan = (Plan *) make_agg(root,
@@ -1601,7 +1578,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 												 parse->groupClause,
 												 groupColIdx,
 												 result_plan);
-					current_pathkeys = root->group_pathkeys;
 				}
 
 				result_plan = (Plan *) make_group(root,
@@ -1612,7 +1588,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									extract_grouping_ops(parse->groupClause),
 												  dNumGroups,
 												  result_plan);
-				/* The Group node won't change sort ordering */
 			}
 			else if (root->hasHavingQual)
 			{
@@ -1722,13 +1697,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 														result_plan,
 														window_pathkeys,
 														-1.0);
-					if (!pathkeys_contained_in(window_pathkeys,
-											   current_pathkeys))
-					{
-						/* we do indeed need to sort */
+
+					/*
+					 * we do indeed need to sort if result_plan is not ordered
+					 * on window_pathkeys
+					 */
+					if (!plan_is_ordered(result_plan, window_pathkeys))
 						result_plan = (Plan *) sort_plan;
-						current_pathkeys = window_pathkeys;
-					}
+
 					/* In either case, extract the per-column information */
 					get_column_info_for_window(root, wc, tlist,
 											   sort_plan->numCols,
@@ -1792,12 +1768,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		long		numDistinctRows;
 
 		/*
-		 * If there was grouping or aggregation, use the current number of
-		 * rows as the estimated number of DISTINCT rows (ie, assume the
-		 * result was already mostly unique).  If not, use the number of
+		 * If result_plan emits already distinct'ed rows, use the current
+		 * number of rows as the estimated number of DISTINCT rows (ie, assume
+		 * the result was already unique).  If not, use the number of
 		 * distinct-groups calculated previously.
 		 */
-		if (parse->groupClause || root->hasHavingQual || parse->hasAggs)
+		if (result_plan->is_unique)
 			dNumDistinctRows = result_plan->plan_rows;
 		else
 			dNumDistinctRows = dNumGroups;
@@ -1822,7 +1798,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									   result_plan->total_cost,
 									   result_plan->startup_cost,
 									   result_plan->total_cost,
-									   current_pathkeys,
+									   result_plan->pathkeys,
 									   dNumDistinctRows);
 		}
 
@@ -1840,8 +1816,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 								 extract_grouping_ops(parse->distinctClause),
 											numDistinctRows,
 											result_plan);
-			/* Hashed aggregation produces randomly-ordered results */
-			current_pathkeys = NIL;
 		}
 		else
 		{
@@ -1865,29 +1839,23 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			else
 				needed_pathkeys = root->distinct_pathkeys;
 
-			if (!pathkeys_contained_in(needed_pathkeys, current_pathkeys))
+			if (!plan_is_ordered(result_plan, needed_pathkeys))
 			{
-				if (list_length(root->distinct_pathkeys) >=
-					list_length(root->sort_pathkeys))
-					current_pathkeys = root->distinct_pathkeys;
-				else
-				{
-					current_pathkeys = root->sort_pathkeys;
-					/* Assert checks that parser didn't mess up... */
-					Assert(pathkeys_contained_in(root->distinct_pathkeys,
-												 current_pathkeys));
-				}
-
+				/* Assert checks that parser didn't mess up... */
+				Assert(pathkeys_contained_in(root->distinct_pathkeys,
+											 needed_pathkeys));
+				Assert(pathkeys_contained_in(root->sort_pathkeys,
+											 needed_pathkeys));
 				result_plan = (Plan *) make_sort_from_pathkeys(root,
 															   result_plan,
-															current_pathkeys,
+														    needed_pathkeys,
 															   -1.0);
 			}
 
-			result_plan = (Plan *) make_unique(result_plan,
-											   parse->distinctClause);
+			if (!result_plan->is_unique)
+				result_plan = (Plan *) make_unique(result_plan,
+												   parse->distinctClause);
 			result_plan->plan_rows = dNumDistinctRows;
-			/* The Unique node won't change sort ordering */
 		}
 	}
 
@@ -1897,13 +1865,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 */
 	if (parse->sortClause)
 	{
-		if (!pathkeys_contained_in(root->sort_pathkeys, current_pathkeys))
+		if (!plan_is_ordered(result_plan, root->sort_pathkeys))
 		{
 			result_plan = (Plan *) make_sort_from_pathkeys(root,
 														   result_plan,
 														 root->sort_pathkeys,
 														   limit_tuples);
-			current_pathkeys = root->sort_pathkeys;
 		}
 	}
 
@@ -1914,17 +1881,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 * ModifyTable node instead.)
 	 */
 	if (parse->rowMarks)
-	{
 		result_plan = (Plan *) make_lockrows(result_plan,
 											 root->rowMarks,
 											 SS_assign_special_param(root));
-
-		/*
-		 * The result can no longer be assumed sorted, since locking might
-		 * cause the sort key columns to be replaced with new values.
-		 */
-		current_pathkeys = NIL;
-	}
 
 	/*
 	 * Finally, if there is a LIMIT/OFFSET clause, add the LIMIT node.
@@ -1942,7 +1901,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 * Return the actual output ordering in query_pathkeys for possible use by
 	 * an outer query level.
 	 */
-	root->query_pathkeys = current_pathkeys;
+	root->query_pathkeys = result_plan->pathkeys;
 
 	return result_plan;
 }

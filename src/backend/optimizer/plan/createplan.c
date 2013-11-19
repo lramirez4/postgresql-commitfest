@@ -98,11 +98,13 @@ static SeqScan *make_seqscan(List *qptlist, List *qpqual, Index scanrelid);
 static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
 			   Oid indexid, List *indexqual, List *indexqualorig,
 			   List *indexorderby, List *indexorderbyorig,
+			   List *pathkeys, bool uniquely_ordered,
 			   ScanDirection indexscandir);
 static IndexOnlyScan *make_indexonlyscan(List *qptlist, List *qpqual,
 				   Index scanrelid, Oid indexid,
 				   List *indexqual, List *indexorderby,
 				   List *indextlist,
+				   List *pathkeys, bool uniquely_ordered,
 				   ScanDirection indexscandir);
 static BitmapIndexScan *make_bitmap_indexscan(Index scanrelid, Oid indexid,
 					  List *indexqual,
@@ -150,8 +152,8 @@ static MergeJoin *make_mergejoin(List *tlist,
 			   bool *mergenullsfirst,
 			   Plan *lefttree, Plan *righttree,
 			   JoinType jointype);
-static Sort *make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
-		  AttrNumber *sortColIdx, Oid *sortOperators,
+static Sort *make_sort(PlannerInfo *root, Plan *lefttree, List *pathkeys,
+		  int numCols,  AttrNumber *sortColIdx, Oid *sortOperators,
 		  Oid *collations, bool *nullsFirst,
 		  double limit_tuples);
 static Plan *prepare_sort_from_pathkeys(PlannerInfo *root,
@@ -750,6 +752,8 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 	plan->qual = NIL;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
+	plan->pathkeys = pathkeys;
+	plan->is_unique = false;
 
 	/* Compute sort column info, and adjust MergeAppend's tlist as needed */
 	(void) prepare_sort_from_pathkeys(root, plan, pathkeys,
@@ -810,7 +814,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 
 		/* Now, insert a Sort node if subplan isn't sufficiently ordered */
 		if (!pathkeys_contained_in(pathkeys, subpath->pathkeys))
-			subplan = (Plan *) make_sort(root, subplan, numsortkeys,
+			subplan = (Plan *) make_sort(root, subplan, pathkeys, numsortkeys,
 										 sortColIdx, sortOperators,
 										 collations, nullsFirst,
 										 best_path->limit_tuples);
@@ -1263,6 +1267,8 @@ create_indexscan_plan(PlannerInfo *root,
 												fixed_indexquals,
 												fixed_indexorderbys,
 											best_path->indexinfo->indextlist,
+												best_path->path.pathkeys,
+												false,
 												best_path->indexscandir);
 	else
 		scan_plan = (Scan *) make_indexscan(tlist,
@@ -1273,6 +1279,8 @@ create_indexscan_plan(PlannerInfo *root,
 											stripped_indexquals,
 											fixed_indexorderbys,
 											indexorderbys,
+											best_path->path.pathkeys,
+											false,
 											best_path->indexscandir);
 
 	copy_path_costsize(&scan_plan->plan, &best_path->path);
@@ -3245,6 +3253,8 @@ make_indexscan(List *qptlist,
 			   List *indexqualorig,
 			   List *indexorderby,
 			   List *indexorderbyorig,
+			   List *pathkeys,
+			   bool  uniquely_ordered,
 			   ScanDirection indexscandir)
 {
 	IndexScan  *node = makeNode(IndexScan);
@@ -3255,6 +3265,8 @@ make_indexscan(List *qptlist,
 	plan->qual = qpqual;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
+	plan->pathkeys = pathkeys;
+	plan->is_unique = uniquely_ordered;
 	node->scan.scanrelid = scanrelid;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
@@ -3274,6 +3286,8 @@ make_indexonlyscan(List *qptlist,
 				   List *indexqual,
 				   List *indexorderby,
 				   List *indextlist,
+				   List *pathkeys,
+				   bool  uniquely_ordered,
 				   ScanDirection indexscandir)
 {
 	IndexOnlyScan *node = makeNode(IndexOnlyScan);
@@ -3284,6 +3298,8 @@ make_indexonlyscan(List *qptlist,
 	plan->qual = qpqual;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
+	plan->pathkeys = pathkeys;
+	plan->is_unique = uniquely_ordered;
 	node->scan.scanrelid = scanrelid;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
@@ -3753,8 +3769,8 @@ make_mergejoin(List *tlist,
  * limit_tuples is as for cost_sort (in particular, pass -1 if no limit)
  */
 static Sort *
-make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
-		  AttrNumber *sortColIdx, Oid *sortOperators,
+make_sort(PlannerInfo *root, Plan *lefttree, List *pathkeys,
+		  int numCols,  AttrNumber *sortColIdx, Oid *sortOperators,
 		  Oid *collations, bool *nullsFirst,
 		  double limit_tuples)
 {
@@ -3776,6 +3792,8 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	plan->qual = NIL;
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
+	plan->pathkeys = pathkeys;
+	plan->is_unique = false;
 	node->numCols = numCols;
 	node->sortColIdx = sortColIdx;
 	node->sortOperators = sortOperators;
@@ -4125,7 +4143,7 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 										  &nullsFirst);
 
 	/* Now build the Sort node */
-	return make_sort(root, lefttree, numsortkeys,
+	return make_sort(root, lefttree, pathkeys, numsortkeys,
 					 sortColIdx, sortOperators, collations,
 					 nullsFirst, limit_tuples);
 }
@@ -4147,6 +4165,7 @@ make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree)
 	Oid		   *sortOperators;
 	Oid		   *collations;
 	bool	   *nullsFirst;
+	List 	   *pathkeys;
 
 	/* Convert list-ish representation to arrays wanted by executor */
 	numsortkeys = list_length(sortcls);
@@ -4168,7 +4187,9 @@ make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree)
 		numsortkeys++;
 	}
 
-	return make_sort(root, lefttree, numsortkeys,
+	pathkeys = make_pathkeys_for_sortclauses(root, sortcls, sub_tlist);
+
+	return make_sort(root, lefttree, pathkeys, numsortkeys,
 					 sortColIdx, sortOperators, collations,
 					 nullsFirst, -1.0);
 }
@@ -4199,6 +4220,7 @@ make_sort_from_groupcols(PlannerInfo *root,
 	Oid		   *sortOperators;
 	Oid		   *collations;
 	bool	   *nullsFirst;
+	List	   *pathkeys;
 
 	/* Convert list-ish representation to arrays wanted by executor */
 	numsortkeys = list_length(groupcls);
@@ -4220,10 +4242,17 @@ make_sort_from_groupcols(PlannerInfo *root,
 		sortOperators[numsortkeys] = grpcl->sortop;
 		collations[numsortkeys] = exprCollation((Node *) tle->expr);
 		nullsFirst[numsortkeys] = grpcl->nulls_first;
+
+		/* This tlist should not be bound with any other orderig clause */
+		Assert(tle->ressortgroupref == 0);
+		tle->ressortgroupref = grpcl->tleSortGroupRef;
+
 		numsortkeys++;
 	}
 
-	return make_sort(root, lefttree, numsortkeys,
+	pathkeys = make_pathkeys_for_sortclauses(root, groupcls, sub_tlist);
+
+	return make_sort(root, lefttree, pathkeys, numsortkeys,
 					 sortColIdx, sortOperators, collations,
 					 nullsFirst, -1.0);
 }
@@ -4339,6 +4368,16 @@ make_agg(PlannerInfo *root, List *tlist, List *qual,
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
 
+	/*
+	 * We can safely assume that the lefttree and therefore the result is
+	 * sorted on group pathkeys and unique if given aggstrategy is AGG_SORTED.
+	 */
+	if (node->aggstrategy == AGG_SORTED)
+		plan->pathkeys =  root->group_pathkeys;
+	else
+		plan->pathkeys =  NIL;
+	plan->is_unique = true;
+
 	return node;
 }
 
@@ -4448,6 +4487,13 @@ make_group(PlannerInfo *root,
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
 
+	/*
+	 * We assume that lefttree is ordered on the same pathkeys with that this
+	 * group node wants.
+	 */
+	plan->pathkeys = lefttree->pathkeys;
+	plan->is_unique = true;
+
 	return node;
 }
 
@@ -4486,6 +4532,8 @@ make_unique(Plan *lefttree, List *distinctList)
 	plan->qual = NIL;
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
+	plan->pathkeys = lefttree->pathkeys;
+	plan->is_unique = true;
 
 	/*
 	 * convert SortGroupClause list into arrays of attr indexes and equality
@@ -4669,6 +4717,8 @@ make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 	plan->qual = NIL;
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
+	plan->pathkeys = lefttree->pathkeys;
+	plan->is_unique = lefttree->is_unique;
 
 	node->limitOffset = limitOffset;
 	node->limitCount = limitCount;
@@ -4717,6 +4767,10 @@ make_result(PlannerInfo *root,
 	plan->qual = NIL;
 	plan->lefttree = subplan;
 	plan->righttree = NULL;
+
+	/* this plan emits at most one row when subplan is NULL */
+	if (subplan == NULL) plan->is_unique = true;
+
 	node->resconstantqual = resconstantqual;
 
 	return node;

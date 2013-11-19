@@ -101,6 +101,8 @@ typedef struct Plan
 	 */
 	double		plan_rows;		/* number of rows plan is expected to emit */
 	int			plan_width;		/* average row width in bytes */
+	List	   *pathkeys;		/* ordered on this pathkeys if any */
+	bool		is_unique;		/* emits unique result */
 
 	/*
 	 * Common structural data for all Plan types.
